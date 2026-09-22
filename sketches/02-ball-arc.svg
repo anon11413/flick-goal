@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
+  <rect width="800" height="480" fill="#1a2332"/>
+  <text x="24" y="36" fill="#e8eef7" font-family="Georgia, serif" font-size="22">02 — Ball flight after lock</text>
+  <text x="24" y="58" fill="#8aa0b8" font-family="sans-serif" font-size="13">θ and P from locked t. Gravity arc. Score if path intersects hoop cylinder.</text>
+  <rect x="40" y="90" width="720" height="350" rx="8" fill="#243044"/>
+  <!-- ground -->
+  <line x1="60" y1="400" x2="740" y2="400" stroke="#2f6b3a" stroke-width="8"/>
+  <!-- arc -->
+  <path d="M140 390 Q 320 80, 560 250" fill="none" stroke="#ffcc33" stroke-width="3" stroke-dasharray="8 6"/>
+  <circle cx="140" cy="390" r="16" fill="#c45c26"/>
+  <circle cx="280" cy="200" r="14" fill="#c45c26" opacity="0.55"/>
+  <circle cx="400" cy="155" r="14" fill="#c45c26" opacity="0.7"/>
+  <circle cx="500" cy="200" r="14" fill="#c45c26" opacity="0.85"/>
+  <!-- hoop -->
+  <ellipse cx="560" cy="250" rx="42" ry="14" fill="none" stroke="#f2f2f2" stroke-width="6"/>
+  <line x1="602" y1="250" x2="640" y2="250" stroke="#888" stroke-width="6"/>
+  <rect x="636" y="180" width="10" height="220" fill="#555"/>
+  <path d="M520 258 Q560 320 600 258" fill="none" stroke="#eee" stroke-width="2" opacity="0.5"/>
+  <text x="520" y="150" fill="#e8eef7" font-size="13" font-family="sans-serif">HOOP (next goal)</text>
+  <text x="200" y="120" fill="#ffcc33" font-size="12" font-family="sans-serif">locked trajectory</text>
+  <!-- miss ghost -->
+  <path d="M140 390 Q 300 40, 720 280" fill="none" stroke="#ff5a5a" stroke-width="2" stroke-dasharray="4 8" opacity="0.5"/>
+  <text x="640" y="270" fill="#ff5a5a" font-size="11" font-family="sans-serif">miss if t off-band</text>
+</svg>

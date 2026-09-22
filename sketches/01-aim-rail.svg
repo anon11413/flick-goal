@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
+  <rect width="800" height="480" fill="#1a2332"/>
+  <text x="24" y="36" fill="#e8eef7" font-family="Georgia, serif" font-size="22">01 — Diagonal aim rail (lock to flick)</text>
+  <text x="24" y="58" fill="#8aa0b8" font-family="sans-serif" font-size="13">Marker ping-pongs along the diagonal. Tap freezes t. Glow = sweet spot for this hoop.</text>
+  <!-- field -->
+  <rect x="40" y="90" width="720" height="350" rx="8" fill="#243044"/>
+  <!-- rail -->
+  <line x1="120" y1="390" x2="620" y2="140" stroke="#3d5a73" stroke-width="28" stroke-linecap="round"/>
+  <line x1="120" y1="390" x2="620" y2="140" stroke="#6b8ca8" stroke-width="10" stroke-linecap="round"/>
+  <!-- sweet band ~28% along rail -->
+  <line x1="310" y1="295" x2="420" y2="240" stroke="#7dffb3" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
+  <!-- marker -->
+  <circle cx="365" cy="268" r="16" fill="#fff4c4" stroke="#ffcc33" stroke-width="4"/>
+  <text x="378" y="255" fill="#fff4c4" font-family="sans-serif" font-size="12">MARKER</text>
+  <!-- labels -->
+  <text x="90" y="418" fill="#8aa0b8" font-family="sans-serif" font-size="12">t=0  low / short</text>
+  <text x="580" y="128" fill="#8aa0b8" font-family="sans-serif" font-size="12">t=1  high / long</text>
+  <text x="430" y="225" fill="#7dffb3" font-family="sans-serif" font-size="12">W(n) band</text>
+  <!-- ball tee -->
+  <circle cx="160" cy="400" r="18" fill="#c45c26"/>
+  <ellipse cx="160" cy="400" rx="18" ry="12" fill="#e8a06a"/>
+  <text x="148" y="444" fill="#e8eef7" font-size="12" font-family="sans-serif">BALL</text>
+  <!-- tap hint -->
+  <rect x="560" y="360" width="160" height="48" rx="8" fill="#e85d04"/>
+  <text x="590" y="390" fill="white" font-family="sans-serif" font-size="18" font-weight="700">TAP FLICK</text>
+</svg>

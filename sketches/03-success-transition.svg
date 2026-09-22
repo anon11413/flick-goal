@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
+  <rect width="800" height="480" fill="#1a2332"/>
+  <text x="24" y="36" fill="#e8eef7" font-family="Georgia, serif" font-size="22">03 — Score transition (swallow → next shot)</text>
+  <g font-family="sans-serif" font-size="12" fill="#8aa0b8">
+    <text x="50" y="80">A 0ms lock</text>
+    <text x="200" y="80">B 80ms squash</text>
+    <text x="370" y="80">C 160ms swallow</text>
+    <text x="540" y="80">D 280ms next tee</text>
+  </g>
+  <!-- A -->
+  <rect x="40" y="100" width="160" height="200" rx="6" fill="#243044"/>
+  <ellipse cx="120" cy="180" rx="30" ry="10" fill="none" stroke="#fff" stroke-width="4"/>
+  <circle cx="120" cy="170" r="12" fill="#c45c26"/>
+  <!-- B -->
+  <rect x="210" y="100" width="160" height="200" rx="6" fill="#243044"/>
+  <ellipse cx="290" cy="185" rx="36" ry="8" fill="none" stroke="#7dffb3" stroke-width="4"/>
+  <circle cx="290" cy="188" r="10" fill="#c45c26"/>
+  <!-- C -->
+  <rect x="380" y="100" width="160" height="200" rx="6" fill="#243044"/>
+  <ellipse cx="460" cy="190" rx="28" ry="9" fill="none" stroke="#fff" stroke-width="3"/>
+  <circle cx="460" cy="198" r="5" fill="#c45c26"/>
+  <circle cx="448" cy="170" r="2" fill="#ffcc33"/>
+  <circle cx="470" cy="165" r="2" fill="#ffcc33"/>
+  <circle cx="460" cy="160" r="3" fill="#fff"/>
+  <!-- D -->
+  <rect x="550" y="100" width="160" height="200" rx="6" fill="#243044"/>
+  <circle cx="590" cy="260" r="12" fill="#c45c26"/>
+  <line x1="575" y1="250" x2="690" y2="140" stroke="#6b8ca8" stroke-width="6" stroke-linecap="round"/>
+  <ellipse cx="680" cy="155" rx="22" ry="8" fill="none" stroke="#fff" stroke-width="3"/>
+  <text x="40" y="340" fill="#e8eef7" font-size="14" font-family="sans-serif">Then same rail UI, random marker phase, faster v(n+1), narrower W(n+1).</text>
+  <text x="40" y="365" fill="#8aa0b8" font-size="13" font-family="sans-serif">Shot clock starts when rail is interactive. No dead time that eats the clock.</text>
+</svg>

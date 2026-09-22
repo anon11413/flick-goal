@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
+  <rect width="800" height="480" fill="#1a2332"/>
+  <text x="24" y="36" fill="#e8eef7" font-family="Georgia, serif" font-size="22">05 — Difficulty: asymptotic, not unbounded exponential</text>
+  <rect x="70" y="80" width="680" height="340" fill="#243044" rx="6"/>
+  <!-- axes -->
+  <line x1="110" y1="380" x2="720" y2="380" stroke="#8aa0b8"/>
+  <line x1="110" y1="380" x2="110" y2="110" stroke="#8aa0b8"/>
+  <text x="700" y="400" fill="#8aa0b8" font-size="12" font-family="sans-serif">score n</text>
+  <!-- exponential bad -->
+  <path d="M110 200 Q 400 180, 520 110" fill="none" stroke="#ff5a5a" stroke-width="2"/>
+  <text x="480" y="100" fill="#ff5a5a" font-size="12" font-family="sans-serif">raw exp speed → unbeatable</text>
+  <!-- asymptotic good -->
+  <path d="M110 300 Q 280 220, 720 175" fill="none" stroke="#7dffb3" stroke-width="3"/>
+  <line x1="110" y1="175" x2="720" y2="175" stroke="#7dffb3" stroke-dasharray="4 4" opacity="0.5"/>
+  <text x="560" y="165" fill="#7dffb3" font-size="12" font-family="sans-serif">v_max so D ≥ 90ms</text>
+  <text x="130" y="430" fill="#8aa0b8" font-size="13" font-family="sans-serif">W shrinks toward W_min; v grows toward W_min/D_min; L toward L_min ≥ reaction + half-period + dwell.</text>
+</svg>
