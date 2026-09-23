@@ -29,7 +29,7 @@ The v2 builds live in the branch worktrees next to the main repo (`C:\Users\asha
 6. For a first-time player, clear the site's data in the phone browser (or `localStorage.clear()` from a `?qa` console). To replay only the slider tutorial use Settings → DEVELOPER → **Reset tutorial** (see Developer options).
 7. Quick checklist on the phone: first kick = slider, second kick = slider fades, third = dots only; the mode button under BEST switches FIELD GOAL / ENDLESS without starting a run (double-tap it too); Store → STADIUMS → buy **Pro Day (HD)** after DEVELOPER **+10,000 coins** and play both modes; Store → UPGRADES → Aim Slider; Settings → Aim slider row.
 
-All v2 builds on the same address share the `flickgoal.save2` save (the old `try/*` builds keep their own `flickgoal.save`).
+All v2 builds on the same address share the `flickgoal.save2` save, so coins, items and BESTs carry over between v2/standard and v2/hard-perfect (see "Shared between v2 builds" below). The old `try/*` builds keep their own `flickgoal.save`.
 
 ## Play on your phone (same Wi-Fi, main repo)
 
@@ -51,6 +51,8 @@ Tips: turn the phone sound on (the game has synthesized SFX). Vibration works on
 - **Aim Slider upgrade.** Store → UPGRADES → AIM SLIDER, 10,000 coins. Once bought, the slider shows on every kick. Switch it off and on again on the store card (IN USE / USE) or in Settings ("Aim slider", shown only once owned).
 - **RETRO and PRO stadiums.** Store → STADIUMS has two sections: RETRO (the flat look; Day Game is free) and PRO GRAPHICS (HD). Prices: Day 400, Night 1,200, Snow 1,500, Sunset 1,800, Arcade 2,400. The ball is drawn in the equipped stadium's style. PRO stadiums use the HD art in both modes (see "Pro graphics" below).
 - **New save.** v2 saves under `flickgoal.save2`. On the first launch it copies coins, owned items, the equipped ball and stadium, your best (into both modes), settings and No Ads from the old save once. The old save is never changed, so older builds on the same address keep their own progress.
+- **Shared between v2 builds.** v2/standard and v2/hard-perfect on the same address use the same `flickgoal.save2`: coins, items, the tutorial and both BESTs carry over when you switch builds. This is on purpose, so you don't have to earn things twice. But v2/hard-perfect scores perfects higher (3 to 6 points, against 2 to 4 in v2/standard), so a hard-perfect run can set the BEST you then see in v2/standard. To compare the two builds fairly, note the BEST before you switch, or use Settings → Reset Progress (or a private browser tab) for each build.
+- **v2/standard: the PERFECT core on the slider is a close guide, not exact** (unchanged from v1). The faint white core inside the green is estimated from the ideal arc. A tap right at its edge can very rarely score a normal goal instead of PERFECT (QA sampling: 4 of 1,914 taps inside the core). The green zone itself is exact: a tap inside it is always a goal. v2/hard-perfect's gold strip is measured from the real simulation and is exact.
 
 ## URL flags
 
