@@ -7,7 +7,7 @@ import { h, setText } from './dom.js';
 
 const CHIPS = [1, 5, 10, 20, 30, 50, 75, 100];
 const UNLOCK_TAPS = 5;
-const TAP_GAP_MS = 1200; // taps further apart than this restart the count
+const TAP_GAP_MS = 1500; // taps further apart than this restart the count
 
 const CSS = `
 .dev-badge {
@@ -41,7 +41,9 @@ const CSS = `
 .dev-chip { height: 44px; border-radius: 999px; font-size: 17px; }
 .dev-chip.on { background: var(--green); color: #fff; box-shadow: 0 3px 0 rgba(0, 0, 0, .18); text-shadow: 0 1px 0 rgba(0, 0, 0, .18); }
 .dev-note { margin-top: 10px; font-size: 12px; font-weight: 800; color: #7b849b; line-height: 1.35; }
-.set-about .version { cursor: default; }
+/* The whole logo + version block is the unlock target: a 13px label alone is too small to hit
+   5x in a row on a phone. manipulation stops fast taps being read as a double-tap zoom. */
+.set-about { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: default; user-select: none; -webkit-user-select: none; }
 `;
 
 function injectStyle() {
@@ -88,16 +90,22 @@ export function createDevPanel({ app, dev, game, router, screens }) {
   const about = body && body.querySelector('.set-about');
   if (body) body.insertBefore(section, about || null);
 
-  // ---- hidden unlock: tap the version label 5x
-  const version = screens.settings.el.querySelector('.version');
+  // ---- hidden unlock: tap the logo/version block 5x. Counted on pointerup rather than click:
+  // mobile browsers can drop the click for quick repeated taps on non-button elements.
+  const target = screens.settings.el.querySelector('.set-about') || screens.settings.el.querySelector('.version');
   let taps = 0;
   let lastTap = 0;
-  if (version) {
-    version.addEventListener('click', () => {
+  if (target) {
+    target.addEventListener('pointerup', (e) => {
+      if (e.button > 0) return;
       const now = performance.now();
       taps = now - lastTap > TAP_GAP_MS ? 1 : taps + 1;
       lastTap = now;
-      if (taps < UNLOCK_TAPS) return;
+      if (taps < UNLOCK_TAPS) {
+        const left = UNLOCK_TAPS - taps;
+        if (taps >= 2) app.dialogs.toast(`${left} more tap${left === 1 ? '' : 's'}…`, { kind: 'info' });
+        return;
+      }
       taps = 0;
       const on = dev.toggle();
       app.sfx('click');
