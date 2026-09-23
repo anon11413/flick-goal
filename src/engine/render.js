@@ -300,6 +300,9 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
       trail.length = 0;
       lockColor = null;
       if (e && e.cut) wipeT = 0;
+      // Adaptive (pro) styles: a dev start-round run opens straight on its tier palette, whose
+      // layers were pre-warmed on the menu (no cross-dissolve, no layer builds). Retro unchanged.
+      if (e && e.startMade > 0 && style.adaptive) snapTier(game.world.tier);
       styleFx('runStart', e);
     }),
     game.on('continue', (e) => {

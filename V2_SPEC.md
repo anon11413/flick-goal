@@ -1,6 +1,6 @@
 # Flick Goal v2 — Build Plan (V2_SPEC)
 
-Status: Engineer A delivered (see §15 for the as-built interface); pro style pending (Engineer B). Branch `v2/standard` (worktree `C:\Users\ashau\flick-goal-branches\v2-standard`, created from `full-game@1267f6f`).
+Status: Engineer A delivered (see §15.1 for the as-built interface); Engineer B delivered the PRO style (§15.2). Branch `v2/standard` (worktree `C:\Users\ashau\flick-goal-branches\v2-standard`, created from `full-game@1267f6f`).
 Readers: **Engineer A** (gameplay, UI, core renderer, retro style) builds first. **Engineer B** (pro style) builds afterwards against what A delivers. The two engineers do not talk: this file is the contract. When A has to deviate from an interface described here, A **must** update §5 of this file (and list the deviation in §15 "As-built notes") before handing over.
 
 Precedence: this file > `SPEC.md` (v1 base contract, still valid for everything not changed here) > `GAME_DESIGN.md` / `MATH.md`.
@@ -665,7 +665,33 @@ One headless Chrome at a time (`channel: 'chrome'`), `browser.close()` in `final
 
 ### 15.2 Engineer B
 
-(record optional core hooks here)
+**Delivered:** `src/engine/styles/pro/**` replaces the stub (the "PRO ART PENDING" preview tag is gone). The registry is unchanged; it already imports `./pro/index.js`.
+
+| File | Content |
+|---|---|
+| `index.js` | style object (`adaptive: true`), wires the modules below, `lightFor(theme)` = the theme light's ball light |
+| `lights.js` | `LIGHTS` / `lightOf(themeId)`: pro-graphics light moods + `pool` (night light pools), `sheen`, `near` |
+| `balls.js` | `PRO_BALLS` (all 15 catalog ids, `draw(ctx, r, time, rot, light)`), `previewProBall`, `DEFAULT_LIGHT`; pro-graphics skins verbatim except the galaxy nebulae, which now use cached unit gradients (no gradients built per frame) |
+| `decor.js` | pro-graphics decor for all 5 themes (`PRO_DECOR`, `PRO_FRONT`), standing on `f.proj.farY`; layer keys `pro:*` |
+| `field.js` | `drawProFieldLayout` / `drawProEndlessLayout`: retro geometry (1:1 framing) + pro finish: grain pattern, sky sheen, far-wall contact shadow, near-camera darkening, night light pools, shaded end zones / pylons / far wall, photographers, end-zone stands with a sprite-atlas crowd |
+| `props.js` | tube-shaded posts, light casts, ENDLESS base disc (in `drawPostShadow`, as retro), net (poles, two-layer mesh, ripple), tee, coin, trail, ball shadow, ball + motion smear |
+| `fx.js` | `onFx` (flick chunks + puff + glow, bounce puffs / post glow, goal blooms, perfect sparkle, coin / continue glows, land / net puffs), `drawEffects` (shaded two-sided confetti, puffs, additive star / spark glow pass, rings, blooms; low tier skips the glow pass and big blooms) |
+| `finish.js` | `drawSky` (3-stop cached), `drawFront` (snow / pollen + blurred foreground strip layer), `drawFinish` (vignette) |
+| `warm.js` | `warmLayer`: see below |
+
+**Core touch (the only file outside `pro/**`, besides the test and docs):** `render.js` `runStart` handler: `if (e.startMade > 0 && style.adaptive) snapTier(game.world.tier)`. A dev start-round run on a PRO stadium opens straight on its tier palette, whose layers were pre-warmed on the menu (pro-graphics behaviour and test). Retro is unaffected, because the line is gated on `style.adaptive`; a test checks that retro dev runs still cross-dissolve. No new interface functions were needed.
+
+**Decisions / deviations:**
+- **Field = vector per frame, not a layer.** The perspective turf changes with every camera move (each depth row scrolls at its own rate), so it can't be one cached bitmap. It's the retro geometry with a few cached unit gradients, plus one pattern fill for the grain. What *is* cached is the decor (clouds, bowl + crowd, scoreboard, towers, mountains, pines, palms, skyline, streak clouds) and the foreground strip, exactly as in pro-graphics.
+- **Grain pattern and crowd atlas are outside `f.layers`.** The grain is one device-pixel pattern per context (`WeakMap`). The crowd atlas is one 960x68 canvas of 24 shaded fans per crowd palette, drawn with one `drawImage` per fan. Both are built through `f.makeCanvas` (or `defaultMakeCanvas` in previews) and never while `f.inFlight`: if one is missing in flight, that frame falls back (no grain, flat fans). They don't count in `layers.stats`.
+- **`warmLayer` (pro/warm.js).** The layer cache only builds what's requested on screen. Three layers can first scroll into view while the ball is in flight: the big scoreboard (the ENDLESS camera pans far), the sunset streak clouds and the foreground strip. Each is requested once per palette through an empty clip while not in flight, so it's built in a calm frame and registered for the next-tier pre-warm. Without this, one scoreboard layer was built mid-flight in ENDLESS (caught by the test).
+- **Night towers** are shorter than in pro-graphics: `round(clamp(h * 0.22, 90, 330))`. The far wall sits higher on screen now, so the lamp heads would sit behind the HUD. The height depends on the view size only; an earlier version tied it to the far-wall y, which moves with the camera, and rebuilt the tower layer 30+ times per run, some of them in flight.
+- **Grain strength** per surface: grass 0.6, snow 0.35, sand / neon 0.45, times the theme's `grain`. It is weaker than pro-graphics' full-strength grain, because at full strength the vertical blades read as rain on the flat end-zone paint.
+- **Glows** are drawn with `r * f.k` (world units, per §15.1), not raw px as in pro-graphics (k is about 1 on phones).
+
+**Tests:** `tests/style-pro.test.mjs` (16 tests): registration of the real style; every PRO stadium runs in both layouts, with cached layers blitted, fewer than 60 offscreen canvases, each at most 2048²; no more than 6 gradients per 60 settled frames (every theme, both modes); every ball skin under every light, in both layouts; forced low / high tiers (2x cap, lighter frame, no grain); auto quality (switches only at a calm moment; retro resets it); **zero layers built in flight across a mid-flight tier change, every theme × both modes**; dev start round (snaps to its tier, pre-warmed, no mid-flight builds, a normal restart fades back); retro dev runs unchanged; the crowd atlas is used; PRO previews through `directLayers` without the placeholder tag; 360x640 / 430x932. All 162 tests pass.
+
+**Measured** (headless Chrome on the dev PC, 390x844 @3x, `renderer.draw`, about 8 s of auto-play): see PLAYTEST "Pro graphics". PRO high: median 1.5 to 1.9 ms, p95 2.4 to 3.6 ms. PRO low: 1.6 / 2.6 ms. RETRO: 1.1 to 1.3 / 1.8 to 2.1 ms. At 4x CPU throttle: RETRO about 8 to 9 ms median, PRO high about 9 to 14 ms. `layersBuiltInFlight` stayed 0 in every browser run.
 
 ---
 
