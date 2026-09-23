@@ -140,8 +140,31 @@ export const CONFIG = deepFreeze({
     missDelay: 0.9,        // sim seconds from miss to 'gameover'
     slowmoScale: 0.35,
     slowmoTime: 0.5,
-    settleMax: 0.8,        // max seconds from first landing to next shot setup
+    settleMax: 0.15,       // seconds from the first landing (after a goal) to the swoop to the next attempt
     clockLowFrac: 0.25,    // 'clockLow' event threshold
+    swoopTime: 0.5,        // camera swoop to a fresh attempt (after a goal / continue / play again), before introTime
+  },
+
+  // ---- Football field (broadcast side view; see SPEC.md §8.1) ----
+  // The post always stands on the END LINE at world x = world.fieldEnd; every shot is a
+  // fresh field-goal attempt teed up `d` world units in front of it (d snapped to whole yards).
+  field: {
+    yard: 7.5,             // world units per yard: d 200..430 u reads as 27..57 yd attempts
+    endZoneYards: 10,      // painted end zone in front of the end line (goal line = end line - 10 yd)
+    halfWidth: 200,        // sideline distance from the play line (~26.7 yd), depth units
+    hashDepth: 23,         // hash marks ~3 yd either side of the play line (NFL hashes)
+    camDist: 700,          // pseudo-perspective: camera distance to the play line (depth units)
+    tilt: 0.45,            // depth foreshortening at the play line (screen px per depth unit / k)
+    // Behind the end line (post-resolution only; the solver never sees these, see SPEC.md §8.1):
+    netOffset: 70,         // kicking net this far behind the post (> physics.passMissMargin + post reach)
+    netAbove: 110,         // net top = post top + this
+    netBottomFrac: 0.5,    // net hangs down to this fraction of the crossbar height (poles reach the ground)
+    netHalf: 15,           // pseudo-3D half-width of the net between its poles (like the uprights)
+    standsOffset: 135,     // end-zone stands start this far behind the post (padded wall, then crowd)
+    standsWallH: 16,       // front wall height of the end-zone stands
+    standsRise: 0.45,      // seating rise per unit of depth behind the wall
+    standsDepth: 490,      // seating depth; top row = standsWallH + depth * rise (stays below the view's eye height)
+    standsBackH: 34,       // facade above the top row; a ball clearing it has left the stadium
   },
 
   // ---- Economy ----

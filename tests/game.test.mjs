@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG } from '../src/config.js';
 import { createGame, PHASES } from '../src/engine/game.js';
-import { makeRng } from '../src/engine/physics.js';
+import { makeRng, postReach } from '../src/engine/physics.js';
 
 const STEP = 1 / CONFIG.sim.hz;
 const R = CONFIG.physics.ballRadius;
@@ -85,10 +85,16 @@ test('tap in the sweet band scores, then the next shot starts', () => {
   stepUntil(game, () => events.filter((e) => e.n === 'shotStart').length > shotsBefore, 6);
   assert.ok(events.some((e) => e.n === 'land'));
   assert.equal(game.phase, 'aim');
-  assert.ok(game.world.shot.teeX > shot.postX, 'next tee is past the old post');
-  assert.equal(game.world.ball.x, game.world.shot.teeX);
+  // Fresh attempt: the post stays on the end line, the new ball is teed d in front of it.
+  const next = game.world.shot;
+  assert.notEqual(next, shot);
+  assert.ok(Math.abs(next.postX - shot.postX) < 1e-9, 'post stays on the end line');
+  assert.ok(Math.abs(game.world.post.x - game.world.fieldEnd) < 1e-9);
+  assert.ok(Math.abs(next.postX - next.teeX - next.d) < 1e-9, 'tee is d in front of the end line');
+  assert.equal(game.world.ball.x, next.teeX);
   assert.equal(game.world.ball.y, R);
-  assert.ok(game.world.oldPost, 'old post kept for drawing');
+  assert.equal(game.world.swoop, null, 'swoop finished before aiming');
+  assert.equal(game.world.oldBall, null, 'previous ball gone once aiming');
   assert.equal(game.hud().made, 1);
 });
 
@@ -174,13 +180,18 @@ test('continueRun works once per run, keeps score, resets streak', () => {
   game.world.marker.t = 0;
   game.tap();
   stepUntil(game, () => game.phase === 'over', 8);
-  const teeX = game.world.shot.teeX;
+  const end = game.world.fieldEnd;
+  const madeBefore = game.hud().made;
   assert.equal(game.continueRun(), true);
   assert.ok(events.some((e) => e.n === 'continue'));
   assert.equal(game.phase, 'intro');
   assert.equal(game.hud().score, score);
   assert.equal(game.hud().streak, 0);
-  assert.equal(game.world.shot.teeX, teeX, 'same tee');
+  const cs = game.world.shot;
+  assert.equal(cs.made, madeBefore, 'continue = fresh attempt at the same difficulty');
+  assert.ok(Math.abs(cs.postX - end) < 1e-9, 'same end line');
+  assert.ok(Math.abs(cs.postX - cs.teeX - cs.d) < 1e-9);
+  const teeX = cs.teeX;
   stepUntil(game, () => game.phase === 'aim');
   assert.equal(game.world.ball.x, teeX);
   stepUntil(game, () => game.phase === 'over', 20); // let the clock run out
@@ -210,6 +221,14 @@ test('camera hard clamp keeps the ball on screen for t = 0 and t = 1 flights', (
         for (let i = 0; i < 4 * CONFIG.sim.hz; i++) {
           game.step(STEP);
           if (game.phase === 'intro') break;
+          // after the shot is resolved a ball may sail clean over the end-zone stands
+          // ("out of the stadium"); the camera stops chasing it only then
+          const w = game.world;
+          const outX = w.post.x + CONFIG.field.standsOffset + CONFIG.field.standsDepth;
+          if (w.ball.x - R > outX) {
+            assert.ok(['miss', 'over', 'settle'].includes(game.phase), 'only a resolved shot can leave the stadium');
+            continue;
+          }
           assertBallVisible(game, `vp ${vp} t ${t} seed ${seed} step ${i} phase ${game.phase}`);
         }
       }
@@ -336,4 +355,165 @@ test('a short miss that rolls into the post bounces off the stem (no pass-throug
     }
   }
   assert.ok(rolledNearStem || events.some((e) => e.n === 'bounce' && e.p.kind === 'stem'), 'scenario should reach the stem');
+});
+
+test('each shot is a fresh field-goal attempt on the same end line, in whole yards, getting longer', () => {
+  const U = CONFIG.field.yard;
+  for (let seed = 1; seed <= 4; seed++) {
+    const { game, events } = setup(seed * 7);
+    game.newRun();
+    const end = game.world.fieldEnd;
+    assert.ok(Number.isFinite(end));
+    const yards = [];
+    for (let i = 0; i < 40; i++) {
+      stepUntil(game, () => game.phase === 'aim', 8);
+      const w = game.world;
+      const s = w.shot;
+      assert.ok(Math.abs(s.postX - end) < 1e-9, 'post on the end line');
+      assert.ok(Math.abs(w.post.x - end) < 1e-9);
+      assert.equal(w.fieldEnd, end, 'end line never moves');
+      assert.ok(Math.abs(s.d / U - Math.round(s.d / U)) < 1e-9, `d ${s.d} is whole yards`);
+      assert.equal(w.yards, Math.round(s.d / U));
+      assert.ok(w.yards >= 20 && w.yards <= 62, `attempt length ${w.yards} yd`);
+      if (s.pickup) assert.ok(s.pickup.x > s.teeX && s.pickup.x < s.postX, 'pickup between tee and post');
+      yards.push(w.yards);
+      w.marker.t = s.band.tBest;
+      game.tap();
+      stepUntil(game, () => game.phase === 'intro' || game.phase === 'miss', 8);
+      assert.equal(game.phase, 'intro', 'tBest always scores');
+    }
+    const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    assert.ok(avg(yards.slice(-10)) > avg(yards.slice(0, 5)) + 8, `attempts get longer: ${yards.join(' ')}`);
+    assert.equal(events.filter((e) => e.n === 'score').length, 40);
+  }
+});
+
+test('camera swoop to the next attempt: timed, frozen clock + marker, taps ignored, lands on the aim frame', () => {
+  const { game, events } = setup(11);
+  game.newRun();
+  stepUntil(game, () => game.phase === 'aim');
+  game.world.marker.t = game.world.shot.band.tBest;
+  game.tap();
+  stepUntil(game, () => game.phase === 'intro', 8);
+  const w = game.world;
+  assert.ok(w.swoop, 'swoop starts after a goal');
+  assert.ok(w.oldBall, 'previous ball kept while the camera leaves it');
+  assert.equal(w.ball.x, w.shot.teeX, 'fresh ball already teed up');
+  assert.equal(w.freshBall, true);
+  const t0 = w.marker.t;
+  let n = 0;
+  while (game.phase === 'intro') {
+    assert.equal(game.tap(), false, 'taps ignored while swooping');
+    assert.equal(w.marker.t, t0, 'marker frozen');
+    assert.equal(game.hud().clock01, 1, 'clock frozen');
+    game.step(STEP);
+    n++;
+    assert.ok(n < 5 / STEP);
+  }
+  const secs = n * STEP;
+  const want = CONFIG.timing.swoopTime + CONFIG.timing.introTime;
+  assert.ok(Math.abs(secs - want) < 0.03, `intro with swoop lasted ${secs}s (want ${want})`);
+  assert.equal(game.phase, 'aim');
+  assert.equal(w.swoop, null);
+  assert.equal(w.oldBall, null);
+  // The ball and the post are framed on screen when aiming starts.
+  const vp = game.viewport;
+  for (const [x, y] of [[w.shot.teeX, R], [w.shot.postX, w.shot.top]]) {
+    const p = game.worldToScreen(x, y);
+    assert.ok(p.x > 0 && p.x < vp.cssW && p.y > 0 && p.y < vp.cssH, `(${x}, ${y}) on screen at aim start`);
+  }
+  assert.equal(events.filter((e) => e.n === 'shotStart').length, 2);
+});
+
+test('newRun from the menu glides the ball (no swoop); from game over it swoops to a fresh ball', () => {
+  const { game } = setup(21);
+  game.idle();
+  const end = game.world.fieldEnd;
+  assert.equal(game.world.ball.x, 0);
+  assert.ok(Math.abs(game.world.post.x - end) < 1e-9);
+  game.newRun();
+  assert.equal(game.world.swoop, null, 'menu -> play: ball glides onto the tee');
+  assert.equal(game.world.fieldEnd, end, 'same field as the menu');
+  stepUntil(game, () => game.phase === 'aim');
+  game.world.marker.t = 1;
+  game.tap();
+  stepUntil(game, () => game.phase === 'over', 10);
+  for (let i = 0; i < 120; i++) game.step(STEP);
+  const old = { x: game.world.ball.x, y: game.world.ball.y };
+  game.newRun();
+  const far = Math.hypot(old.x - game.world.shot.teeX, old.y - R) > 120;
+  assert.equal(!!game.world.swoop, far, 'swoop iff the old ball is away from the new tee');
+  if (far) assert.deepEqual([game.world.oldBall.x, game.world.oldBall.y], [old.x, old.y], 'old ball fades where it lay');
+  assert.equal(game.world.fieldEnd, end);
+  stepUntil(game, () => game.phase === 'aim', 3);
+  assert.equal(game.world.ball.x, game.world.shot.teeX);
+});
+
+test('net + stands sit past every pre-resolution rule, so the solver guarantees are untouched', () => {
+  const F = CONFIG.field;
+  const P = CONFIG.physics;
+  assert.ok(F.netOffset - R > P.passMissMargin, 'net is past the pass-miss line');
+  assert.ok(F.netOffset - R > postReach(CONFIG), 'net is past the post reach (goal resolves first)');
+  assert.ok(F.standsOffset > F.netOffset);
+  const topH = F.standsWallH + F.standsDepth * F.standsRise;
+  const eye = F.tilt * F.camDist; // pseudo-3D eye height: seats above it would render upside down
+  assert.ok(topH < eye, `stands top ${topH} below eye height ${eye}`);
+});
+
+test('after a goal the kicking net catches the ball and the next attempt follows quickly', () => {
+  let worst = 0;
+  let goals = 0;
+  let nets = 0;
+  for (let seed = 1; seed <= 8; seed++) {
+    const { game } = setup(seed * 29);
+    game.on('net', () => nets++);
+    game.newRun();
+    for (let shot = 0; shot < 12; shot++) {
+      stepUntil(game, () => game.phase === 'aim');
+      const band = game.world.shot.band;
+      game.world.marker.t = band.lo + (band.hi - band.lo) * (0.1 + 0.8 * ((shot * 7) % 10) / 10);
+      assert.equal(game.tap(), true);
+      let t = 0;
+      let maxRel = -Infinity;
+      while (game.phase !== 'intro') {
+        assert.notEqual(game.phase, 'over', 'in-band taps always score');
+        game.step(STEP);
+        t += STEP;
+        maxRel = Math.max(maxRel, game.world.ball.x - game.world.post.x);
+        assert.ok(t < 4, 'goal -> next attempt within 4 s');
+      }
+      goals++;
+      worst = Math.max(worst, t);
+      assert.ok(maxRel < CONFIG.field.standsOffset, `ball stopped before the stands (${maxRel.toFixed(1)})`);
+    }
+  }
+  assert.ok(nets >= goals * 0.8, `net catches most goals (${nets}/${goals})`);
+  assert.ok(worst < 2.2, `shot -> swoop start at most ${worst.toFixed(2)} s`);
+});
+
+test('a ball dropping into the end-zone stands is caught by the crowd; one clearing the facade leaves the stadium', () => {
+  const F = CONFIG.field;
+  const { game } = setup(5);
+  game.newRun();
+  stepUntil(game, () => game.phase === 'aim');
+  game.world.marker.t = 0;
+  game.tap();
+  stepUntil(game, () => game.phase === 'miss', 6);
+  const w = game.world;
+  const b = w.ball;
+  const sx = w.post.x + F.standsOffset;
+  Object.assign(b, { x: sx + 120, y: 260, vx: 60, vy: 0, rolling: false, resting: false });
+  stepUntil(game, () => b.resting, 4);
+  const seat = F.standsWallH + (b.x - sx) * F.standsRise;
+  assert.ok(b.x > sx && b.y >= seat, `caught in the seats at (${b.x.toFixed(1)}, ${b.y.toFixed(1)})`);
+  assertBallVisible(game, 'caught ball on screen');
+  // a low ball is stopped by the padded front wall
+  Object.assign(b, { x: sx - 60, y: R + 2, vx: 400, vy: 0, rolling: false, resting: false });
+  for (let i = 0; i < 60; i++) game.step(STEP);
+  assert.ok(b.x <= sx - R + 1e-6, 'front wall stops a low ball');
+  // a ball high over the top-row facade flies out of the stadium
+  const back = sx + F.standsDepth;
+  Object.assign(b, { x: back - 40, y: 700, vx: 500, vy: 100, rolling: false, resting: false });
+  for (let i = 0; i < 60; i++) game.step(STEP);
+  assert.ok(b.x > back, 'cleared the stands');
 });

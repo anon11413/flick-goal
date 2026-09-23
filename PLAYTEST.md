@@ -53,6 +53,8 @@ localStorage.clear(); location.reload()    // truly fresh
 
 To playtest higher levels without playing up to them, you can pick the round a run starts on. Round R is the R-th kick of a run. Starting at round R plays exactly like a normal run that has already made R-1 goals: same needle speed, band width, shot clock, kick distance, post heights, PERFECT window and background colour. The score starts at R-1, the streak and run coins start at 0, and Continue is still available.
 
+The background colour follows the score, not the round, so a dev start shows the colour for a score of R-1. That is the colour you would see if every goal so far had scored 1 point. A real run with PERFECT kicks (up to 4 points each) may already be on a later colour at the same round.
+
 **On the phone:** open Settings and tap the version label (`v1.0.0`) at the bottom **5 times** quickly. A "Developer mode ON" toast appears, and a **DEVELOPER** section shows up in Settings. Set **Start round** with the -/+ buttons or the quick chips (1, 5, 10, 20, 30, 50, 75, 100), then go back and play. Tap the version 5 times again to turn developer mode off.
 
 **By URL:** `?round=30` sets the start round to 30 and turns developer mode on. `?dev=1` turns developer mode on without changing the round, and `?dev=0` turns it off. They combine with the other flags, for example `?round=50&debug=1`.

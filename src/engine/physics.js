@@ -394,6 +394,21 @@ function finishShot(shot, b, rng, cfg) {
 }
 
 /**
+ * Field-goal distance in whole yards for a tee -> post distance d (world units).
+ * The post stands on the end line, so this is the attempt's official length.
+ */
+export function yardsOf(d, cfg = CONFIG) {
+  const u = cfg.field && cfg.field.yard > 0 ? cfg.field.yard : 0;
+  return u ? Math.round(d / u) : Math.round(d);
+}
+
+/** Snap a tee -> post distance to whole yards (so the tee sits exactly on a yard mark). */
+function snapYards(d, cfg) {
+  const u = cfg.field && cfg.field.yard > 0 ? cfg.field.yard : 0;
+  return u ? Math.round(d / u) * u : d;
+}
+
+/**
  * Generate a shot that is guaranteed hittable (SPEC §6.2): the physics band has
  * width ~W(made), sits fully inside the rail, and its dwell is >= dwellMin.
  * Always returns a Shot.
@@ -408,7 +423,7 @@ export function solveShot({ teeX = 0, made = 0, rng = Math.random } = {}, cfg = 
   const gp = gap(made, cfg);
 
   for (let tries = 0; tries < m.maxTries; tries++) {
-    const d = distance(made, cfg) + (rng() * 2 - 1) * dcfg.distance.jitter;
+    const d = snapYards(distance(made, cfg) + (rng() * 2 - 1) * dcfg.distance.jitter, cfg);
     const bar = br.min + rng() * (br.max - br.min);
     const top = bar + gp;
     const hc = (bar + top) / 2;
@@ -432,7 +447,7 @@ export function solveShot({ teeX = 0, made = 0, rng = Math.random } = {}, cfg = 
   }
 
   // Fallback (never expected; asserted by tests): a known-friendly layout.
-  const d = dcfg.distance.start;
+  const d = snapYards(dcfg.distance.start, cfg);
   const gp0 = dcfg.gap.start;
   const bar = dcfg.barHeight.min;
   const thetaC = 45 * DEG;

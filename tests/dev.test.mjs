@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG } from '../src/config.js';
 import { createGame } from '../src/engine/game.js';
-import { makeRng, solveShot } from '../src/engine/physics.js';
+import { makeRng, solveShot, yardsOf } from '../src/engine/physics.js';
 import * as D from '../src/engine/difficulty.js';
 import { createDevState, clampRound, isDevRun, nextBest, DEV_KEY } from '../src/dev.js';
 
@@ -119,6 +119,36 @@ test('dev start state: score = made = N, streak 0, coins 0, tier from score, con
   assert.equal(game.continueRun(), true);
   assert.equal(game.hud().startMade, 29);
   assert.equal(game.world.shot.made, 29);
+});
+
+test('field posts: a dev start from the menu is a round-R attempt on the menu end line, framed after the swoop', () => {
+  const R = CONFIG.physics.ballRadius;
+  const U = CONFIG.field.yard;
+  const dj = CONFIG.difficulty.distance.jitter;
+  for (const n of [0, 9, 29, 49, 99]) {
+    const { game } = setup(17);
+    game.idle();
+    const end = game.world.fieldEnd;
+    game.newRun({ startMade: n });
+    const w = game.world;
+    const s = w.shot;
+    assert.equal(w.fieldEnd, end, `N=${n}: same end line as the menu`);
+    assert.ok(Math.abs(s.postX - end) < 1e-9, `N=${n}: post on the end line`);
+    assert.ok(Math.abs(s.teeX - (end - s.d)) < 1e-9, `N=${n}: tee d in front of the post`);
+    assert.equal(w.yards, yardsOf(s.d), `N=${n}: yard label from the attempt length`);
+    assert.ok(Math.abs(s.d / U - Math.round(s.d / U)) < 1e-9, `N=${n}: whole yards`);
+    assert.ok(Math.abs(s.d - D.distance(n)) <= dj + U / 2 + 1e-9, `N=${n}: ${w.yards} yd ~ schedule ${D.distance(n) / U}`);
+    // Swoop iff the menu ball is far from the new tee (the same rule as a natural next attempt).
+    assert.equal(!!w.swoop, Math.abs(s.teeX) > 120, `N=${n}: swoop iff far`);
+    stepUntil(game, () => game.phase === 'aim', 5);
+    assert.equal(w.swoop, null);
+    assert.equal(w.ball.x, s.teeX, `N=${n}: ball teed up`);
+    const vp = game.viewport;
+    for (const [x, y] of [[s.teeX, R], [s.postX, s.top]]) {
+      const p = game.worldToScreen(x, y);
+      assert.ok(p.x > 0 && p.x < vp.cssW && p.y > 0 && p.y < vp.cssH, `N=${n}: (${x}, ${y}) on screen at aim start`);
+    }
+  }
 });
 
 test('startMade is clamped to [0, maxRound - 1]', () => {

@@ -468,6 +468,10 @@ game.on('bounce', (e) => {
   }
 });
 
+game.on('net', (e) => {
+  if ((e.impact || 0) > 140) sfx('thud');
+});
+
 game.on('score', (e) => {
   sfx(e.perfect ? 'perfect' : 'goal');
   haptic(e.perfect ? 'perfect' : 'goal');

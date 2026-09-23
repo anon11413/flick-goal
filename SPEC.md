@@ -41,7 +41,7 @@ The old single-file prototype in `index.html` is replaced entirely by the shell 
 
 ## 2. Units and coordinate systems
 
-- **World**: units `u`, **y-up**, ground at `y = 0`. The first tee of a run is at `x = 0`. Ball resting on ground has `y = R` (`R = physics.ballRadius = 16`).
+- **World**: units `u`, **y-up**, ground at `y = 0`. The first tee ever (menu scene) is at `x = 0`; its post fixes the **end line** `world.fieldEnd`, which never moves afterwards (§8.1). Ball resting on ground has `y = R` (`R = physics.ballRadius = 16`).
 - **Stage**: the portrait game rectangle `#stage` (CSS px, origin top-left). Canvas fills it.
 - `k0 = cssW / view.worldWidth` (css px per world unit at zoom 1). With camera `{x, y, zoom}` = world coords of the view's **bottom-left** corner:
   - `k = k0 * zoom`, `viewW = worldWidth / zoom`, `viewH = cssH / k`
@@ -149,10 +149,10 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) // -> Game
 | `off(event, fn)` | |
 | `setViewport(cssW, cssH)` | required before the first `step`; call on every resize |
 | `idle()` | attract scene for menus: tee at x=0 with ball, one solved post (made=0), no rail, no clock. Phase `idle`. |
-| `newRun()` | reset score/made/streak/coinsRun/continues, tee x=0, `solveShot`, phase `intro`, emits `runStart` |
+| `newRun()` | reset score/made/streak/coinsRun/continues, fresh attempt on the end line (§8.1), phase `intro`, emits `runStart` |
 | `tap() -> boolean` | only in `aim`: freezes marker t, launches `mapRail(shot, t)`, phase `fly`, emits `flick`. Otherwise returns false (no-op) |
 | `step(dt)` | advance one fixed step |
-| `continueRun() -> boolean` | only in `over` and `continuesUsed < economy.continuesPerRun`: ball back on the missed shot's tee, **new** `solveShot` at same `made`, score/streak kept (streak reset to 0), phase `intro`, emits `continue`; else false |
+| `continueRun() -> boolean` | only in `over` and `continuesUsed < economy.continuesPerRun`: a **fresh attempt** (new `solveShot` at the same `made`, post on the same end line, §8.1), score/streak kept (streak reset to 0), phase `intro`, emits `continue`; else false |
 | `hud()` | `{phase, score, made, streak, coinsRun, clock, clockMax, clock01, canContinue}` — clock in seconds (full value during `intro`); `clock01 = clock/clockMax` |
 | `worldToScreen(x, y) -> {x, y}` | css px in stage using current camera |
 | `phase` (getter) | current phase string |
@@ -188,7 +188,7 @@ Key sets of `BALL_SKINS` / `STADIUM_THEMES` **must equal** the ids in `CONFIG.ca
 
 ```
 idle --newRun()--> intro --(introTime 0.45s)--> aim --tap()--> fly
-fly --goal crossed--> (emit score, keep flying) --ground--> settle --(rest | settleMax)--> intro (next shot)
+fly --goal crossed--> (emit score, keep flying) --ground | kicking net--> settle --(rest | settleMax after first landing | 0.9 s cap)--> intro (next attempt: swoop + intro)
 aim --clock<=0--> miss ; fly --miss rule--> miss
 miss --(missDelay 0.9s sim, slow-mo first 0.5s)--> over (emit gameover)
 over --continueRun()--> intro ;  over/any --newRun()--> intro ;  any --idle()--> idle
@@ -201,7 +201,7 @@ over --continueRun()--> intro ;  over/any --newRun()--> intro ;  any --idle()-->
   - ball touches ground (`y <= R`) before scoring → `'short'` if it never reached `post.x`, else `'post'` if any collision happened this flight, else `'short'`
   - `ball.x > post.x + passMissMargin` without a goal → `'over'` if it crossed above `top`, `'post'` if collided, else `'short'`
   - `ball.x < teeX - backMissDistance` or flight time > `maxFlightTime` → `'post'`
-- After a goal the flight continues; first ground contact bounces (`restitutionGround`, vx *= 0.6), contact with `|vy| < restSpeed` → roll with `groundFriction` → rest. Next tee = rest x (or current x at `settleMax`). Emit `land` on first ground contact.
+- After a goal the flight continues; first ground contact bounces (`restitutionGround`, vx *= 0.6), contact with `|vy| < restSpeed` → roll with `groundFriction` → rest. Emit `land` on first ground contact. The next shot is a **fresh attempt** (§8.1), not a kick from where the ball stopped.
 
 Events (`game.on(name, fn)`; payload objects; `sx, sy` are stage css px via `worldToScreen`):
 
@@ -290,6 +290,7 @@ target.y = (B.h <= availH(z)) ? B.minY : B.maxY - availH(z)     // keep ground i
 ease: c += (target - c) * (1 - exp(-rate * dt))  for x, y, zoom   (rate = camRate in idle/intro/aim, camRateFly otherwise)
 ```
 Boxes:
+- **Swoop** (fresh attempt, §8.1): for `timing.swoopTime` (0.5 s) at the start of `intro` the camera is tweened (front-loaded ease `1 - (1-u)^4 (1+4u)`: zero start speed but half the move is done by u ≈ 0.3, on view centre + zoom, with a 12 % mid-way zoom-out) from where it was to the new aim frame, then the normal intro (`introTime`) runs. Clock and marker stay frozen, taps are ignored, the rail is hidden.
 - `idle / intro / aim`: `minX = teeX - framePadX`, `maxX = postX + framePadX`, `minY = -groundPad`, `maxY = max(top, shot.apex) + framePadTop`.
 - `fly` before resolution: union of the aim box and the ball circle ± (R + 60).
 - after a goal (`fly` post-score, `settle`): `{minX: ball.x - 200, maxX: ball.x + 200, minY: -groundPad, maxY: max(ball.y + 120, 380)}`.
@@ -303,12 +304,28 @@ Worst-case aim zoom ≈ 0.75 (d ≈ 430) → ball ≈ 10 css px radius on a 360 
 ## 8. Rendering and juice (engine)
 
 Look: Flappy Hoops — flat saturated colors, almost no gradients, big soft shapes, crisp dpr canvas.
-Draw order: sky (palette skyTop→skyBottom, crossfade 0.8 s on tier change) → theme decor (clouds/stars+light towers/snowfall/sun+palms/neon grid; parallax 0.2–0.4) → field (flat ground, alternating stripe every 80 u, yard line every 160 u) → far upright + stem + crossbar (post color `#FFD21F`, white highlight, orange ribbons on tips) → pickup coin (gold, spinning via scaleX = cos) → trail (skin.trail, 14 pts, tapering) → ball (`drawBall`, tee drawn under it in idle/intro/aim) → near upright → particles → **rail (screen space)** → flash overlay → debug overlay.
+Draw order: sky (palette skyTop→skyBottom, crossfade 0.8 s on tier change) → theme decor (clouds/stars+light towers/snowfall/sun+palms/neon grid; parallax 0.2–0.4), standing on the far stadium wall → field (§8.1: perspective turf, end zone, yard lines, numbers, kick-spot line) → far upright + stem + crossbar (post color `#FFD21F`, white highlight, orange ribbons on tips) → pickup coin (gold, spinning via scaleX = cos) → trail (skin.trail, 14 pts, tapering) → ball (`drawBall`, tee drawn under it in idle/intro/aim) → near upright → particles → **rail (screen space)** → flash overlay → debug overlay.
 
 Rail (screen space, `CONFIG.rail`): start = ball screen pos + (offsetX, offsetY); direction `angleDeg` up-right; length = clamp(lengthFrac·cssW, minLen, maxLen); whole rail shifted to stay `edgeMargin` inside the stage. Track: rounded, thickness 26, `rgba(0,0,0,.22)` with 3 px white outline. Band `[lo,hi]`: bright green `#6BFFB0` fill at opacity `shot.bandAlpha` (fades 0.95 → 0.45 with difficulty); perfect core `[perfLo,perfHi]` whiter at the same alpha ×1.2; **band edge brackets** (3.5 px green lines with a dark outline, poking out above and below the track) are always drawn at full opacity, so the target never disappears. Marker: a slim white **needle** (`rail.markerWidth` 6 px, track height + 2·`markerOverhang`) with an accent outline and a small pointer cap, so the band stays visible on both sides of it even at the narrowest band (~19 px on a 360 px phone); it turns green/red on lock and pops on tap. Rail length = `clamp(0.58·cssW, 150, 260)`.
 Note (doinks): the band shows only **clean** goals. Taps just outside it can still score as a DOINK off the crossbar / upright tips (measured: the scoring part of the rail is ~1.3–1.9× the band). This is intentional forgiveness (it only helps the player); `difficulty.band` is tuned with it in mind. Also a short 5-dot launch-angle indicator from the ball. Rail fades in over `introTime`, out over `rail.fadeOut` after flick.
 
 Juice (render-time, driven by events): squash/stretch (flick: stretch 1.25/0.8 along velocity decaying 0.2 s; bounce/land: squash 0.7/1.3), ball spin in flight 8–14 rad/s by power, trail, confetti on goal (24 flat rects in accent colors), perfect: 60 confetti + expanding white ring + star burst + flash (α 0.25), post hit sparks, landing dust, coin pickup sparkle. Screen shake: goal 4 px/0.15 s, perfect 8 px/0.25 s, post 5 px, miss 10 px/0.3 s. Background palette shifts per tier (score / 10). Particles/shake use `frameDt` (cosmetic, not simulated).
+
+### 8.1 The field: why the post is on the end line (branch `try/field-posts`)
+
+Problem: the play line (world `y = 0`) used to be drawn as the far edge of a big foreground turf with the stands right behind it, so the tee and post seemed to stand on a sideline/track.
+
+Model: a **broadcast side view**. The camera is on the near sideline looking across the field; the ball flies along the field's length toward the end zone. World x = along the field, a pseudo-depth z = across it; `z = 0` is the play line in the **middle of the field** (between the hashes), where the ball, tee and post stand. Ground points project with a pinhole model around a vanishing point at the view centre: `s(z) = D / (D + z)`, `sx = vpx + (X - vpx)·s`, `sy = gy + Hh·(s - 1)`, with `D = field.camDist`, `Hh = field.tilt · D · k` (`skins.fieldProjection`). At `z = 0` this is exactly the world mapping, so physics, colliders and the camera are unchanged. The far half recedes to the far sideline, bench area and a stadium wall (theme decor stands on the wall); the near half comes toward the camera down to the near sideline and team area.
+
+Markings (`skins.drawField`, shared by the game and the store previews): 5-yard mowing stripes, yard lines and goal lines across the field (converging in perspective), 1-yard hash marks at the hashes and sidelines, yard numbers every 10 yd (near side upright, far side upside down, arrows toward the nearer goal), a painted **end zone** in the team colour (palette key `zone`) with diagonal stripes and camera-readable words, white borders, orange pylons, and a broadcast-blue kick-spot line through the tee. Per stadium (`STADIUM_THEMES[id].field`): grass with padded wall (day), grass under light pools with an LED ribbon board (night), snow-covered turf with drifts and a snow-capped wall (snow), a sand field against the sea (beach), a neon grid field (arcade).
+
+The **goal post stands on the end line** at the back of the end zone (`world.fieldEnd`, fixed for the session). This is why it is not "in the middle of the field": in real football the uprights sit on the end line, 10 yd behind the goal line.
+
+**Fresh attempts.** Every shot is a new field-goal attempt: `solveShot({teeX: 0, made})` is translated with `shiftShot(shot, fieldEnd - shot.postX)` (the solver is translation-invariant: the band, the always-hittable guarantee and every test carry over unchanged), so the post is on the end line and the ball is teed `d` in front of it. The solver snaps `d` to whole yards (`field.yard = 7.5 u`, `physics.yardsOf`): attempts read 27–35 yd on the first shots and 49–57 yd at high scores, following `difficulty.distance`. The length is shown as a "38 YD FG" pill under the tee and a "FIELD GOAL ATTEMPT / 38 YARDS" banner during the swoop. After a goal, a continue or a replay from game over, a fresh ball is teed up and the camera swoops (§7) while the old ball fades where it lay; from the menu the ball just glides onto the tee. The post keeps its x and telescopes to the new bar / upright heights (0.4 s tween, render only).
+
+Why 27–57 yd and not 20–60: the yard mapping is fixed by the painted field (7.5 u per yard, so the ball and post keep their size against the yard lines), and the tee → post distance still comes straight from the tuned `difficulty.distance` curve (230 → 400 u ± jitter), so the fairness tuning is untouched. Real kicks are rarely under 20 yd (the shortest is ~18 yd from the 1-yard line). Change `field.yard` to re-scale the labels and the markings together.
+
+**Behind the end line** (so the camera never shows a bare void after a goal): a textured apron, a few kneeling photographers along the end line, a **kicking net** behind the uprights (`field.netOffset` 70 u behind the post, from `netBottomFrac` × bar height up to `post.top + netAbove`, drawn in the same pseudo-3D as the uprights, ripples when hit) and **end-zone stands**: a padded front wall at `post.x + standsOffset`, then seat rows rising `standsRise` per unit for `standsDepth` (the top row stays below the view's eye height so it never renders upside down), packed with a per-theme crowd (beanies on snow, umbrellas on the beach, neon dots in the arcade), topped by a facade. `game.backstop()` gives these physics **only after the shot is resolved** (in `freeStep`): the net knocks the ball down (`net` event), the wall bounces a low ball back, a ball that drops into the seats is caught by the crowd (rests there), and one that clears the facade has left the stadium (the camera stops chasing it past `stadiumBackX`). The net sits past `passMissMargin` and the post reach, so the solver and every pre-resolution rule are unchanged. After a goal the camera frames end zone + post + net (`postGoalBox`), settle starts as soon as the net catches the ball or it lands, and the swoop begins `settleMax` (0.15 s) after the first landing (hard cap 0.9 s): shot → next swoop is ≤ ~1.6 s in a 1000-goal sim.
 
 Debug (`debug` option, from `?debug=1`): top-left text `n v W(target/measured) D L clock s fallback`, draws the goal window rect and the tStar trajectory. `console.assert(checkSchedule().ok)` at startup in debug.
 
@@ -488,7 +505,7 @@ Shell:
 - `save.test.mjs`: memory storage roundtrip; throwing storage (every method throws) → still works, `persisted === false`; `migrate` on `null`, `"garbage"`, wrong types, unknown ids, equipped-not-owned; `reset` keeps noAds+settings; future timestamps clamped; newer-version save never overwritten; cross-tab `ingest` keeps both tabs' coins.
 - `shop.test.mjs`: buy success/owned/insufficient/unknown; equip locked; gift ready at start, cooldown 4 h with injected `now`, amount range/step with injected rng; rewarded cooldown; `applyProduct('no_ads'|'coins_500')`; change listener fires; gift / rewarded cooldown recover from a timestamp in the future (clock set back).
 - `runCoins.test.mjs`: 2x → Continue → 2x ledger (total and doublable amounts).
-- `game.test.mjs` also covers: marker frozen during intro and starting ≥ 0.2 s from the band; a rolling ball bounces off the stem.
+- `game.test.mjs` also covers: marker frozen during intro and starting ≥ 0.2 s from the band; a rolling ball bounces off the stem; every attempt has its post on the fixed end line, a whole-yard distance in 20–62 yd that grows with `made`; the swoop is timed, freezes clock + marker, ignores taps and lands on the aim frame; menu → play glides, game over → play swoops. The kicking net / stands sit past every pre-resolution rule; the net stops goals before the stands and the next swoop follows within 2.2 s; the crowd catches a ball dropping into the seats, the front wall stops a low one, and only a resolved shot may sail out of the stadium (the one case where the ball-on-screen clamp is released).
 
 ## 16. Acceptance checklist
 - Menu → Play → multiple goals (PERFECT popups, coins fly, tier color shifts) → miss → Game Over → Continue (mock ad) → miss → 2x coins → Play Again (interstitial every 3rd per policy) → Home. Store buy/equip ball + stadium visibly applies in game and persists across reload. Gift claim + countdown. Settings reset via DOM dialog. `mode:'off'` hides all ad/IAP UI and everything else still works.
