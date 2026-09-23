@@ -16,6 +16,8 @@ import { createFx } from './ui/fx.js';
 import { createHud } from './ui/hud.js';
 import { createStore } from './ui/store.js';
 import { createRouter, createMenu, createPaused, createGameOver, createSettings } from './ui/screens.js';
+import { createDevState, isDevRun, nextBest } from './dev.js';
+import { createDevPanel } from './ui/devPanel.js';
 
 const STEP = 1 / CONFIG.sim.hz;
 const params = new URLSearchParams(location.search);
@@ -26,6 +28,8 @@ const qa = debug || params.has('qa') || params.has('smoke');
 const monCfg = params.get('ads') === 'off'
   ? { ...CONFIG, monetization: { ...CONFIG.monetization, mode: 'off' } }
   : CONFIG;
+// Developer "start round" (?round=N, ?dev=1, Settings version 5x tap); inert when cfg.dev.enabled is false.
+const dev = createDevState({ cfg: CONFIG, search: location.search });
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -237,6 +241,7 @@ router = createRouter({
   ui: uiRoot,
   screens: { menu, hud, paused, gameover, store, settings },
 });
+createDevPanel({ app, dev, game, router, screens: { menu, hud, gameover, settings } });
 let routeAt = performance.now();
 router.onChange(() => { routeAt = performance.now(); });
 /** ms since the current route was shown (input grace periods). */
@@ -251,7 +256,7 @@ function startRun() {
   if (flowBusy) return;
   sfx('whoosh');
   haptic('tap');
-  game.newRun();
+  game.newRun({ startMade: dev.startMade() });
   router.show('playing');
 }
 
@@ -267,6 +272,7 @@ function resume() {
 }
 
 function recordBest(score) {
+  if (isDevRun(game.hud())) return; // dev start-round runs never touch Best
   if (score > save.data.best) save.update((d) => { d.best = score; });
 }
 
@@ -503,9 +509,10 @@ game.on('miss', () => {
 });
 
 game.on('gameover', (e) => {
-  const newBest = e.score > run.bestAtRunStart && e.score > 0;
+  const devRun = isDevRun(e); // dev start-round run: no Best update, no NEW BEST
+  const newBest = !devRun && e.score > run.bestAtRunStart && e.score > 0;
   save.update((d) => {
-    d.best = Math.max(d.best, e.score);
+    d.best = nextBest(d.best, e);
     d.stats.bestStreak = Math.max(d.stats.bestStreak, e.bestStreak | 0);
   });
   runCoins.setEarned(e.coinsRun | 0);
@@ -518,6 +525,7 @@ game.on('gameover', (e) => {
     canContinue: !!e.canContinue,
     best: save.data.best,
     newBest,
+    startMade: e.startMade | 0,
   };
   if (router.current === 'playing' || router.current === 'paused') {
     router.show('gameover', { fresh: true });
@@ -723,7 +731,7 @@ function boot() {
   setTimeout(() => { const b = $('#boot'); if (b) b.remove(); }, 600); // after the fade-out
   if (!save.persisted) console.info('Flick Goal: storage unavailable — progress will not be saved this session.');
   if (qa) {
-    window.__fg = { game, shop, save, mon, router, renderer, audio, CONFIG, fmtNum };
+    window.__fg = { game, shop, save, mon, router, renderer, audio, CONFIG, fmtNum, dev };
   }
 }
 

@@ -36,6 +36,8 @@ Tips: turn the phone sound on (the game has synthesized SFX). Vibration works on
 | `?debug=1` | Debug overlay (goal window, nominal arc, band / speed / clock numbers), difficulty-schedule self-check in the console, `window.__fg` handle, and the settings footer shows the ads mode |
 | `?qa` | `window.__fg` handle for console poking (`__fg.shop.addCoins(5000)`, `__fg.game`, `__fg.save.data`), plus the ads-mode footer. No overlay |
 | `?smoke` | Same as `?qa` (used by the automated smoke test) |
+| `?round=N` | Developer start round (1 to 200): runs begin at kick N, as if N-1 goals were made. Also turns developer mode on. See below |
+| `?dev=1` | Developer mode on (Settings shows the DEVELOPER section); `?dev=0` turns it off |
 | `?ads=off` | Runs as if `monetization.mode = 'off'`: every ad and IAP button is hidden, so you can check that the game is complete without them |
 
 Handy console snippets (with `?qa`):
@@ -46,6 +48,20 @@ __fg.save.update(d => { d.lastGiftAt = 0 }) // make the free gift ready again
 __fg.save.reset(); location.reload()       // fresh player (keeps No Ads + settings)
 localStorage.clear(); location.reload()    // truly fresh
 ```
+
+## Developer option: start at a later round
+
+To playtest higher levels without playing up to them, you can pick the round a run starts on. Round R is the R-th kick of a run. Starting at round R plays exactly like a normal run that has already made R-1 goals: same needle speed, band width, shot clock, kick distance, post heights, PERFECT window and background colour. The score starts at R-1, the streak and run coins start at 0, and Continue is still available.
+
+**On the phone:** open Settings and tap the version label (`v1.0.0`) at the bottom **5 times** quickly. A "Developer mode ON" toast appears, and a **DEVELOPER** section shows up in Settings. Set **Start round** with the -/+ buttons or the quick chips (1, 5, 10, 20, 30, 50, 75, 100), then go back and play. Tap the version 5 times again to turn developer mode off.
+
+**By URL:** `?round=30` sets the start round to 30 and turns developer mode on. `?dev=1` turns developer mode on without changing the round, and `?dev=0` turns it off. They combine with the other flags, for example `?round=50&debug=1`.
+
+- The setting is saved in its own localStorage key (`flickgoal.dev`), separate from the game save. It stays set across reloads, and every build served from the same address shares it.
+- While the start round is above 1, a small **DEV · R30** badge shows on the menu (top-left) and in the HUD (under the pause button).
+- Dev runs **never change your Best score** and never show NEW BEST. Game Over shows a small "DEV RUN · started R30" tag instead. Coins are earned normally.
+- Range 1 to 200. Round 1 is the normal game. While developer mode is off, every run starts at round 1 (the chosen round is remembered for when you turn it back on).
+- For release, set `dev.enabled: false` in `src/config.js`. That removes every way in: the URL flags, the version-tap unlock and the section.
 
 ## What to look for
 
@@ -94,3 +110,4 @@ All numbers live in one file. Edit it, then reload.
 | Look | `view.zoomMax`, `view.slackBelow`, `view.hudReserve` | Camera framing (how big and how centred the action is) |
 | | `rail.lengthFrac`, `rail.thickness`, `rail.markerWidth` | Aim rail size and needle width |
 | Haptics | `haptics.*` | Vibration patterns (ms) |
+| Dev | `dev.enabled`, `dev.maxRound` | Developer start-round option (see above). Set `enabled: false` for release |
