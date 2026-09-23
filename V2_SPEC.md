@@ -1,6 +1,6 @@
 # Flick Goal v2 — Build Plan (V2_SPEC)
 
-Status: Engineer A delivered (see §15.1 for the as-built interface); Engineer B delivered the PRO style (§15.2). Branch `v2/standard` (worktree `C:\Users\ashau\flick-goal-branches\v2-standard`, created from `full-game@1267f6f`).
+Status: Engineer A delivered (see §15.1 for the as-built interface); Engineer B delivered the PRO style (§15.2); review fix pass in §15.3. Branch `v2/standard` (worktree `C:\Users\ashau\flick-goal-branches\v2-standard`, created from `full-game@1267f6f`).
 Readers: **Engineer A** (gameplay, UI, core renderer, retro style) builds first. **Engineer B** (pro style) builds afterwards against what A delivers. The two engineers do not talk: this file is the contract. When A has to deviate from an interface described here, A **must** update §5 of this file (and list the deviation in §15 "As-built notes") before handing over.
 
 Precedence: this file > `SPEC.md` (v1 base contract, still valid for everything not changed here) > `GAME_DESIGN.md` / `MATH.md`.
@@ -268,7 +268,7 @@ layers.prewarm()
 
 `src/engine/layers.js` exports `createLayers({ getPhase, makeCanvas, bgScale, debug })` with exactly the pro-graphics semantics: `layer(c, key, w, h, draw, x, y)` where `draw(c, pal)` paints a `w x h` tile at the origin; entries keyed by layer key -> palette key -> size slot; crossfades between `palKeyFrom`/`palKeyTo`; **never builds while `phase` is `fly` or `settle` when an older layer can stand in**; `prewarm()` builds at most one missing layer per ~0.1 s in calm phases (idle, intro, miss, over; never aim, never flight), including the next tier and the dev warm tier; ImageBitmap promotion + one-time off-screen touch; eviction past 90 layers; `clear()` on theme/size/quality change; `stats` (`built`, `inFlight`). Keys must be prefixed by the style id (`'pro:stands'`) so styles never collide.
 
-`src/engine/quality.js` exports the pro-graphics monitor (rolling 90-frame window, median draw ms > 5 or long-frame share rule, two strikes, switch to low only at a calm phase, `setQuality` override). The core runs it only while the active style has `adaptive: true`; the low tier sets `f.lowQ = true`, caps the backing store at 2x dpr and layer scale at 1x (pro-graphics behaviour). Retro: no monitoring, full dpr, `lowQ` always false.
+`src/engine/quality.js` exports the pro-graphics monitor (rolling 90-frame window, median draw ms > 5 or long-frame share rule, two strikes, switch to low only at a calm phase, `setQuality` override), extended in §15.3 with a frame-interval-only jank rule and an early very-slow check. The core runs it only while the active style has `adaptive: true`; the low tier sets `f.lowQ = true`, caps the backing store at 2x dpr and layer scale at 1x (pro-graphics behaviour). Retro: no monitoring, full dpr, `lowQ` always false.
 
 A direct (non-caching) layer API is also exported, `directLayers(pal)` (a factory bound to a palette, §15), which draws `draw(c, pal)` straight onto the target inside a clipped translate; previews use it (pro-graphics decor already supports "cache absent -> drawn directly").
 
@@ -492,7 +492,7 @@ Layout inside `.menu-main`: logo, BEST pill, **mode block**, PLAY button, TAP TO
 - Tap chip → `app.toggleMode()`: `save.mode = other`, `ui.calloutDone = true`, `game.idle({mode})` (scene swaps behind with the wipe), chip `.switching` animation (scale .9 → 1.12 → 1 over 320 ms, `--ease-bounce`; old label slides up out, new slides up in), BEST shows the new mode's best, sfx `whoosh`, haptic `tap`. It never starts a run (it is a `button` inside `[data-no-tap]`, so `fromUi` blocks both the capture-phase menu click and pointerdown). Reduced motion: no animation.
 - Callout `button.mode-callout` (gold `#FFD21F` pill, ink 14 px/900, down arrow toward the chip, bounce translateY 0 → -6 px, 1 s loop): "NEW: Endless mode! Tap to switch". Tapping it = tapping the chip. Visible when `calloutVisible(save)`:
   `!ui.calloutDone && !ui.endlessTried && stats.gamesPlayed >= modes.calloutMinGames && ui.calloutShows < modes.calloutMaxShows`.
-  Each time the menu route is entered with the callout visible, `ui.calloutShows += 1` (so it appears on at most 3 menu visits). Imported v1 players qualify immediately (their `gamesPlayed` is imported); new players after 3 games.
+  A "menu visit" is counted once per app launch and once per return from a run (as fixed, §15.3; Store / Settings round trips don't count): `ui.calloutShows += 1`, so it appears on at most 3 visits. Imported v1 players qualify immediately (their `gamesPlayed` is imported); new players after 3 games.
 - The rest of the screen stays tap-to-play in the current mode (Space/Enter too).
 - Must fit at 360x640 with the compact rules (verify the play button, TAP TO PLAY and bottom row stay fully visible and the callout never overlaps the play button).
 
@@ -692,6 +692,42 @@ One headless Chrome at a time (`channel: 'chrome'`), `browser.close()` in `final
 **Tests:** `tests/style-pro.test.mjs` (16 tests): registration of the real style; every PRO stadium runs in both layouts, with cached layers blitted, fewer than 60 offscreen canvases, each at most 2048²; no more than 6 gradients per 60 settled frames (every theme, both modes); every ball skin under every light, in both layouts; forced low / high tiers (2x cap, lighter frame, no grain); auto quality (switches only at a calm moment; retro resets it); **zero layers built in flight across a mid-flight tier change, every theme × both modes**; dev start round (snaps to its tier, pre-warmed, no mid-flight builds, a normal restart fades back); retro dev runs unchanged; the crowd atlas is used; PRO previews through `directLayers` without the placeholder tag; 360x640 / 430x932. All 162 tests pass.
 
 **Measured** (headless Chrome on the dev PC, 390x844 @3x, `renderer.draw`, about 8 s of auto-play): see PLAYTEST "Pro graphics". PRO high: median 1.5 to 1.9 ms, p95 2.4 to 3.6 ms. PRO low: 1.6 / 2.6 ms. RETRO: 1.1 to 1.3 / 1.8 to 2.1 ms. At 4x CPU throttle: RETRO about 8 to 9 ms median, PRO high about 9 to 14 ms. `layersBuiltInFlight` stayed 0 in every browser run.
+
+### 15.3 Fix pass after review (v2/standard)
+
+Reviewers found two high, three medium and nine low issues plus brief gaps. What changed:
+
+**Menu / chip (D2 one-tap guarantee).**
+- A dismissed callout no longer collapses (`.mode-callout.gone`: faded, `visibility: hidden`, no pointer events) for the rest of that menu visit, so the chip never moves up under the finger. The capture-phase menu click also ignores taps for `MODE_SWITCH_GRACE` (350 ms) after any mode switch (`lastModeSwitchAt` in `main.js`). A double tap on the chip with the callout showing is now one switch and no run (Playwright at 390x844 and 360x640; also callout tap + a second tap 300 ms later).
+- The chip label is painted once per switch: `doSwitch` marks `switching` while `app.toggleMode()` refreshes the menu, so the old label slides out while the new one slides in (MutationObserver check).
+- Pointer clicks blur the chip, and the stage click handler finds the button through `e.composedPath()`. Space / Enter after a mouse click on the chip start a run again.
+- Callout visits: counted once per app launch and once per return from a run (`calloutCountDue`), not per route entry.
+
+**PRO performance (D3/D6).** Profiling with Chrome traces showed that the cost was in the GPU process (`CommandBuffer::Flush`, `drawPath`), not in `draw()`. The expensive operations were: translucent path fills (one per hash mark / line, or one many-contour path, which needs a coverage mask), strokes of many translucent lines (neon grid, apron grid, net mesh), per-frame clips (sliced sun, ball), concave star paths, and multi-rect paths (star dots). Changes:
+- `engine/field.js` `barPainter(ctx, pr)`: thin ground bars (yard / goal / end lines, hash marks, team-area ticks, neon grids) as affine-mapped `fillRect`s (a parallelogram per segment, split along z to keep the taper), which batch into one GPU draw. It falls back to one combined path on contexts without `getTransform` (test stubs). Used by both styles; `quadSub` appends a quad to the current path for the remaining batched fills (stripes, drifts, apron bands).
+- Neon thin grid: yard-wise bars + horizontal `fillRect` rows (retro and pro), no strokes.
+- PRO net mesh: axis-aligned rects (ripple = offset segments); the low tier draws one mesh layer with straight cords.
+- `paint.js` `cachedSprite(key, w, h, draw)` (a detached canvas, `null` without a canvas implementation) plus sprite-based `softSpot` (goal blooms, glow passes, puffs, soft shadows); a per-(font, text) width cache `textWidth` for the end-zone words.
+- PRO: star particles are rotated sprites, confetti are affine-mapped rects, twinkling stars / motes are one `fillRect` each, photographers and floodlight lamp grids are sprites, the sliced suns (sunset, arcade) are cached layers built through `warmLayer` (palette-aware for the next-tier pre-warm).
+- PRO ball (high tier only): painted on a small CPU-backed canvas (`willReadFrequently`) and blitted. Static skins are repainted only when size or spin change; animated skins (neon, fire, pixel, galaxy, gold) repaint every frame at up to 2x. Cost: about +0.5 to 1 ms `draw()` time, saving about 1.5 ms of GPU-process time per ball.
+- Low tier also drops: sideline hash ticks, the dim net layer, half the line segments, the end-zone word bleed / sheen passes, and half the hill vertices.
+- `layers.stats.maxBuildMs` is reported by `getQuality().layerMaxBuildMs` (1.7 to 5.3 ms per layer build on the dev PC).
+- Measured (PLAYTEST "Pro graphics"): frames over 21 ms dropped from 12-85% to 2-16% on FIELD and to 1-3% on ENDLESS (arcade FIELD 9-28%, the heaviest theme). GPU-process time per frame dropped by about 40%. RETRO: 1-3%.
+
+**Adaptive quality (medium).** `quality.js`: a frame-interval-only rule (`Q_JANK_SHARE` 0.3 of long frames for 4 consecutive checks, so one burst inside the 90-frame window cannot trip it), `Q_EVERY` 30-frame checks, the post-reset skip also ends after `Q_SKIP_S` (0.5 s), and an early check after `Q_FILL_S` (1.5 s) of samples flags a very slow device (median > 15 ms or 80% long frames) before the window fills. On the 4x-throttled PC, pro day switched to low within the first 4 s (previously 12-15 s). Tests: cheap draw + long intervals → low; a short burst → stays high; 5% long → stays high; 12 fps → low within 2.5 s.
+
+**Slow devices (medium), partly met.** At 4x CPU slowdown the PRO low tier now matches RETRO (median frame 41-46 ms vs 40-48 ms), but it doesn't reach the 20 ms that the old sideline try/pro-graphics layout reached. The on-field layout itself (RETRO and try/field-posts) is at 35-50 ms there. Getting to 20 ms would need a cached field layer (turf + markings rendered per camera state), which is a bigger change. It's left as a known issue.
+
+**Lows.**
+- ENDLESS yard numbers: the yard line always runs between the last two digits (`14|0`, `100|0`); numbers are squeezed so the digits left of the line stay clear of the next 5-yard line (both styles).
+- ENDLESS distance counter: kept as ground gained, which matches the painted field numbers (documented decision, PLAYTEST).
+- TAP TO PLAY pill: more opaque (`rgba(12,34,64,.62)`) so it reads over the painted end-zone word.
+- Night floodlights: the lamp heads stay below `max(124 px, 17% of the view)` in both styles (retro shortens the towers, pro pushes the cached tower tile down behind the stands).
+- The "+N" score pop moves under the score when it would touch the coin pill (360 px).
+- Corrupt v2 save (not JSON, or not an object): treated as a first launch, so a valid v1 save is imported (v1 key still never written; test).
+- Store fine print: "New players see the slider on their first two kicks." only while the player is still in the tutorial and doesn't own the upgrade.
+
+**Tests:** 165 (`npm test`): + quality jank / early-check tests, + barPainter test, + corrupt-save import test. Playwright (scratchpad `v2/fixflow`): flowA (tutorial, modes, callout visits, chip double tap at 390 / 360, callout second tap, label animation, Space after a click, v1 import), flowB (store, Aim Slider, dev panel), flowC (4 viewports, v1 features in both modes), the v1 smoke test in FIELD and ENDLESS. All pass with zero console errors.
 
 ---
 

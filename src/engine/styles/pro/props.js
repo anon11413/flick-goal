@@ -239,33 +239,52 @@ export function drawNet(ctx, post, f, netFx) {
     const d = (y - fx.y) / 70;
     return rip * 16 * k * Math.exp(-d * d) * Math.cos(fx.t * 22);
   };
+  // Mesh as thin axis-aligned rects (they batch into one GPU draw); stroking one path of
+  // translucent lines needs a coverage mask of the whole net every frame. Overlaps at the
+  // crossings read as knots. The ripple offsets each short segment of a cord.
   const mesh = (alpha, shift, lw, dim) => {
-    ctx.strokeStyle = withAlpha(dim ? mixColor(meshCol, '#000000', 0.35) : meshCol, alpha);
-    ctx.lineWidth = Math.max(0.5, lw * k);
-    ctx.beginPath();
+    ctx.fillStyle = withAlpha(dim ? mixColor(meshCol, '#000000', 0.35) : meshCol, alpha);
+    const t = Math.max(0.5, lw * k);
     const cols = 6;
     const stepY = 12;
+    const damp = dim ? 0.6 : 1;
+    const yTop = f.sy(top);
+    const yBot = f.sy(bot);
     for (let i = 0; i <= cols; i++) {
       const u = i / cols;
-      const bow = Math.sin(Math.PI * u);
-      const x0 = X - o + 2 * o * u + shift;
-      for (let y = bot; y <= top; y += stepY / 2) {
-        const sx = x0 + dxAt(y) * bow * (dim ? 0.6 : 1);
-        const sy = f.sy(y);
-        if (y === bot) ctx.moveTo(sx, sy);
-        else ctx.lineTo(sx, sy);
+      const bow = Math.sin(Math.PI * u) * damp;
+      const x0 = X - o + 2 * o * u + shift - t / 2;
+      if (rip <= 0.001) {
+        ctx.fillRect(x0, yTop, t, yBot - yTop);
+        continue;
+      }
+      for (let y = bot; y < top; y += stepY / 2) {
+        const y1 = Math.min(top, y + stepY / 2);
+        const a = f.sy(y1);
+        ctx.fillRect(x0 + dxAt((y + y1) / 2) * bow, a, t, f.sy(y) - a + 0.3);
       }
     }
+    const segs = f.lowQ ? 1 : 3;
     for (let y = bot + stepY; y < top; y += stepY) {
       const sy = f.sy(y);
       if (sy > f.h + 4 || sy < -4) continue;
-      const d = dxAt(y) * (dim ? 0.6 : 1);
-      ctx.moveTo(X - o + shift, sy);
-      ctx.quadraticCurveTo(X + d + shift, sy + 1.5 * k, X + o + shift, sy);
+      const d = dxAt(y) * damp;
+      // quadratic cord (X - o, sy) -> control (X + d, sy + 1.5k) -> (X + o, sy), in segments
+      let px = X - o + shift;
+      let py = sy;
+      for (let q = 1; q <= segs; q++) {
+        const v = q / segs;
+        const w0 = (1 - v) * (1 - v);
+        const w1 = 2 * v * (1 - v);
+        const nx = w0 * (X - o) + w1 * (X + d) + v * v * (X + o) + shift;
+        const ny = sy + w1 * 1.5 * k;
+        ctx.fillRect(Math.min(px, nx), (py + ny) / 2 - t / 2, Math.abs(nx - px) + 0.3, t);
+        px = nx;
+        py = ny;
+      }
     }
-    ctx.stroke();
   };
-  mesh(neon ? 0.3 : 0.22, 3 * k, 0.7, true);
+  if (!f.lowQ) mesh(neon ? 0.3 : 0.22, 3 * k, 0.7, true); // low tier: one mesh layer
   mesh(neon ? 0.6 : 0.5, 0, 0.85, false);
   ctx.beginPath();
   ctx.rect(X - o, Bt - 2.5 * k, 2 * o, 3.5 * k);
@@ -427,7 +446,58 @@ export function drawBall(ctx, skinId, st, f) {
     ctx.scale(st.sx, st.sy);
     ctx.rotate(a);
   }
-  ctx.rotate(st.rot || 0);
-  skin.draw(ctx, st.r, f.time || 0, st.rot || 0, L.ball);
+  // animated skins repaint every frame: their buffer is capped at 2x (busy textures, half the cost)
+  const animated = ANIMATED_BALLS.has(skinId);
+  const buf = f.lowQ ? null : ballBuffer(ghost ? 1 : 0, st.r, animated ? Math.min(2, f.edpr || 1) : (f.edpr || 1));
+  if (buf) {
+    // Paint the shaded ball on a small CPU-backed canvas and blit it: the skins' clip, lace /
+    // seam strokes and stitch dots each cost a separate coverage-mask draw in the GPU process
+    // (measured ~1.5 ms per ball at 3x, two balls during the FIELD swoop). Static skins are only
+    // repainted when size or spin change; animated ones follow the clock.
+    const tk = animated ? (f.time || 0).toFixed(3) : '';
+    const key = `${skinId}|${st.r.toFixed(2)}|${(st.rot || 0).toFixed(4)}|${tk}|${f.themeId}`;
+    if (buf.key !== key) {
+      const c = buf.ctx;
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.clearRect(0, 0, buf.S, buf.S);
+      c.setTransform(buf.d, 0, 0, buf.d, buf.S / 2, buf.S / 2);
+      c.rotate(st.rot || 0);
+      skin.draw(c, st.r, f.time || 0, st.rot || 0, L.ball);
+      buf.key = key;
+    }
+    const half = buf.S / 2 / buf.d;
+    ctx.drawImage(buf.cv, -half, -half, half * 2, half * 2);
+  } else {
+    ctx.rotate(st.rot || 0);
+    skin.draw(ctx, st.r, f.time || 0, st.rot || 0, L.ball);
+  }
   ctx.restore();
 }
+
+// Skins whose look changes with time (patterns / after-effects read the clock).
+const ANIMATED_BALLS = new Set(['neon', 'fire', 'pixel', 'galaxy', 'gold']);
+
+// Two CPU-backed scratch canvases (live ball, FIELD ghost ball). willReadFrequently keeps them in
+// software, so the ball's clip and strokes rasterize on the CPU instead of the GPU process.
+const BALL_BUFS = [null, null];
+function ballBuffer(slot, r, d) {
+  if (typeof document === 'undefined' || !document.createElement) return null;
+  const S = Math.ceil((r * 1.8 * 2 * d + 4) / 32) * 32; // size buckets: no resize every zoom frame
+  if (!(S > 4) || S > 640) return null;
+  let b = BALL_BUFS[slot];
+  if (!b || b.S !== S || b.d !== d) {
+    try {
+      const cv = (b && b.cv) || document.createElement('canvas');
+      cv.width = S;
+      cv.height = S;
+      const c = (b && b.ctx) || cv.getContext('2d', { willReadFrequently: true });
+      if (!c) return null;
+      b = { cv, ctx: c, S, d, key: '' };
+      BALL_BUFS[slot] = b;
+    } catch (_) {
+      return null;
+    }
+  }
+  return b;
+}
+

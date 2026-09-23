@@ -195,10 +195,73 @@ export function curAlpha(ctx) {
   const a = ctx.globalAlpha;
   return typeof a === 'number' && Number.isFinite(a) ? a : 1;
 }
-/** Soft radial spot (glow / soft shadow): one cached gradient per colour, strength via alpha. */
+// ---------------------------------------------------------------- cached sprites
+// Small pre-rendered sprites (soft spots, star shapes) shared by every context. Consecutive
+// drawImage calls of sprites batch into one GPU draw, while every gradient fill or concave path
+// fill is a separate, costlier draw in the GPU process (goal blooms, glow passes, confetti stars
+// and soft shadows add up to dozens per frame). Without a canvas implementation (node tests)
+// cachedSprite returns null and callers draw vectors instead.
+const SPRITES = new Map();
+let spritesOk = null; // null = unknown, false = no canvas implementation
+function newSpriteCanvas(w, h) {
+  try {
+    // a detached <canvas> first: OffscreenCanvas contexts get per-frame finalize work in Chrome
+    if (typeof document !== 'undefined' && document.createElement) {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      return c;
+    }
+    if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
+  } catch (_) { /* unavailable */ }
+  return null;
+}
+/** Sprite canvas for key (w x h px, painted once by draw(c)), or null when canvases are unavailable. */
+export function cachedSprite(key, w, h, draw) {
+  if (spritesOk === false) return null;
+  let sp = SPRITES.get(key);
+  if (sp !== undefined) return sp;
+  const cv = newSpriteCanvas(w, h);
+  if (!cv) { spritesOk = false; return null; }
+  sp = null;
+  try {
+    draw(cv.getContext('2d'));
+    sp = cv;
+    spritesOk = true;
+  } catch (_) { sp = null; }
+  if (SPRITES.size >= 160) SPRITES.delete(SPRITES.keys().next().value);
+  SPRITES.set(key, sp);
+  return sp;
+}
+const SPOT_PX = 96;
+const SPOT_KEYS = new Map(); // color -> mid -> key (no string building per call)
+function spotSprite(color, mid) {
+  let byMid = SPOT_KEYS.get(color);
+  if (!byMid) { byMid = new Map(); SPOT_KEYS.set(color, byMid); }
+  let key = byMid.get(mid);
+  if (key === undefined) { key = `spot|${color}|${mid}`; byMid.set(mid, key); }
+  return cachedSprite(key, SPOT_PX, SPOT_PX, (c) => {
+    const R = SPOT_PX / 2;
+    const g = c.createRadialGradient(R, R, 0, R, R, R);
+    g.addColorStop(0, withAlpha(color, 1));
+    g.addColorStop(0.3, withAlpha(color, mid));
+    g.addColorStop(1, withAlpha(color, 0));
+    c.fillStyle = g;
+    c.fillRect(0, 0, SPOT_PX, SPOT_PX);
+  });
+}
+
+/** Soft radial spot (glow / soft shadow): one sprite (or cached gradient) per colour, strength via alpha. */
 export function softSpot(ctx, x, y, rx, ry, color, a, mid = 0.42) {
   if (!(rx > 0.3) || !(ry > 0.3) || !(a > 0.003)) return;
   const ga = curAlpha(ctx);
+  const sp = typeof ctx.drawImage === 'function' ? spotSprite(color, mid) : null;
+  if (sp) {
+    ctx.globalAlpha = ga * Math.min(1, a);
+    ctx.drawImage(sp, x - rx, y - ry, rx * 2, ry * 2);
+    ctx.globalAlpha = ga;
+    return;
+  }
   ctx.translate(x, y);
   ctx.scale(rx, ry);
   ctx.globalAlpha = ga * Math.min(1, a);
@@ -250,4 +313,21 @@ export function roundRectPath(ctx, x, y, w, h, r) {
   ctx.lineTo(x, y + rr);
   ctx.arcTo(x, y, x + rr, y, rr);
   ctx.closePath();
+}
+
+// ---------------------------------------------------------------- text metrics
+const TEXT_W = new Map();
+/** Width of `text` in the context's current font, cached per (font, text): measureText per frame
+ *  for the painted end-zone words showed up in profiles. Returns null without measureText. */
+export function textWidth(ctx, text) {
+  if (typeof ctx.measureText !== 'function') return null;
+  const key = ctx.font + '|' + text;
+  let w = TEXT_W.get(key);
+  if (w === undefined) {
+    const m = ctx.measureText(text);
+    w = m && Number.isFinite(m.width) ? m.width : null;
+    if (TEXT_W.size > 256) TEXT_W.clear();
+    TEXT_W.set(key, w);
+  }
+  return w;
 }

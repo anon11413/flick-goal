@@ -6,7 +6,7 @@
 //    stars with an additive glow pass, rings, and additive bloom sprites. One composite switch
 //    per pass; all soft sprites are cached unit gradients (paint.softSpot).
 
-import { mixColor, withAlpha, softSpot, memo } from '../../paint.js';
+import { mixColor, withAlpha, softSpot, memo, cachedSprite } from '../../paint.js';
 import { lightOf } from './lights.js';
 
 const TAU = Math.PI * 2;
@@ -108,12 +108,47 @@ function starPath(ctx, x, y, r, rot) {
   ctx.closePath();
 }
 
+// Star sprite (one per colour): a concave star path per particle is one of the costliest fills
+// for the GPU process, a rotated sprite batches with its neighbours.
+const STAR_PX = 64;
+const STAR_R = 28;
+const STAR_KEYS = new Map();
+function starSprite(color) {
+  let key = STAR_KEYS.get(color);
+  if (key === undefined) { key = `pro:star|${color}`; STAR_KEYS.set(color, key); }
+  return cachedSprite(key, STAR_PX, STAR_PX, (c) => {
+    c.fillStyle = color;
+    starPath(c, STAR_PX / 2, STAR_PX / 2, STAR_R, 0);
+    c.fill();
+  });
+}
+/** Current transform (null for contexts without getTransform, e.g. test stubs). */
+function baseTransform(ctx) {
+  try {
+    const m = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null;
+    return m && Number.isFinite(m.a) && Number.isFinite(m.e) ? m : null;
+  } catch (_) {
+    return null;
+  }
+}
+/** setTransform(base * [la lc le; lb ld lf]). */
+function setLocal(ctx, m, la, lb, lc, ld, le, lf) {
+  ctx.setTransform(
+    m.a * la + m.c * lb, m.b * la + m.d * lb,
+    m.a * lc + m.c * ld, m.b * lc + m.d * ld,
+    m.a * le + m.c * lf + m.e, m.b * le + m.d * lf + m.f,
+  );
+}
+
 /** fx = { particles, rings, glows } in world units (render.js core state). */
 export function drawEffects(ctx, fx, f) {
   const { particles, rings, glows } = fx;
   const W = f.w;
   const H = f.h;
   const k = f.k;
+  // Confetti and stars are drawn as affine-mapped rects / sprites when the context exposes its
+  // transform: solid rects and sprites batch into a few GPU draws (one path fill each otherwise).
+  const m = baseTransform(ctx);
   // additive glow pass for bright particles (stars / sparks)
   if (!f.lowQ) {
     let any = false;
@@ -145,6 +180,17 @@ export function drawEffects(ctx, fx, f) {
         const sr = Math.sin(p.rot);
         const hx = p.size / 2;
         const hy = p.size * 0.3 * fl;
+        if (m) {
+          setLocal(ctx, m, hx * cr, hx * sr, -hy * sr, hy * cr, X, Y);
+          ctx.fillRect(-1, -1, 2, 2);
+          if (fl > 0.86 && p.kind === 'rect') {
+            ctx.globalAlpha = a * (fl - 0.86) * 5;
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(-1, -1, 2, 2);
+          }
+          ctx.setTransform(m);
+          break;
+        }
         ctx.beginPath();
         ctx.moveTo(X - hx * cr + hy * sr, Y - hx * sr - hy * cr);
         ctx.lineTo(X + hx * cr + hy * sr, Y + hx * sr - hy * cr);
@@ -197,12 +243,23 @@ export function drawEffects(ctx, fx, f) {
         ctx.stroke();
         break;
       }
-      case 'star':
+      case 'star': {
         ctx.globalAlpha = u;
+        const r = p.size * (0.5 + 0.5 * u);
+        const sp = m && typeof p.color === 'string' ? starSprite(p.color) : null;
+        if (sp) {
+          const q = r / STAR_R;
+          const rot = p.rot || 0;
+          setLocal(ctx, m, q * Math.cos(rot), q * Math.sin(rot), -q * Math.sin(rot), q * Math.cos(rot), X, Y);
+          ctx.drawImage(sp, -STAR_PX / 2, -STAR_PX / 2);
+          ctx.setTransform(m);
+          break;
+        }
         ctx.fillStyle = p.color;
-        starPath(ctx, X, Y, p.size * (0.5 + 0.5 * u), p.rot || 0);
+        starPath(ctx, X, Y, r, p.rot || 0);
         ctx.fill();
         break;
+      }
       default:
         break;
     }

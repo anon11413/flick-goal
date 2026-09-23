@@ -191,6 +191,22 @@ test('migrate: corrupt JSON in storage loads defaults without throwing', () => {
   assert.deepEqual(JSON.parse(storage.getItem(KEY)), defaultSave());
 });
 
+test('corrupt v2 save + valid v1 save: the v1 import runs (v1 key still never written)', () => {
+  for (const bad of ['{not json', '[]', '42', 'null']) {
+    const storage = spyStorage();
+    storage.setItem(V1KEY, JSON.stringify(V1_SAVE));
+    storage.setItem(KEY, bad);
+    storage.writes.length = 0;
+    const s = createSaveManager({ storage, listen: () => {} });
+    assert.equal(s.data.coins, 1234, bad);
+    assert.equal(s.data.best.field, 17);
+    assert.equal(s.data.equipped.stadium, 'night');
+    assert.equal(s.imported, true);
+    assert.ok(!storage.writes.includes(V1KEY), 'v1 key never written');
+    assert.equal(JSON.parse(storage.getItem(KEY)).coins, 1234);
+  }
+});
+
 test('migrate: coerces wrong types', () => {
   const m = migrate({
     v: 2,

@@ -8,7 +8,7 @@ import { createGame } from '../src/engine/game.js';
 import { createRenderer } from '../src/engine/render.js';
 import { makeRng } from '../src/engine/physics.js';
 import { createLayers, directLayers, MAX_LAYERS } from '../src/engine/layers.js';
-import { createQualityMonitor, Q_WIN } from '../src/engine/quality.js';
+import { createQualityMonitor, Q_WIN, Q_SKIP, Q_EVERY } from '../src/engine/quality.js';
 import { stubCanvas, stubCtx, canvasFactory } from './_stub.mjs';
 
 const STEP = 1 / CONFIG.sim.hz;
@@ -239,4 +239,65 @@ test('quality monitor: slow medians trip low after two checks; forced modes; res
   const built = createQualityMonitor();
   for (let i = 0; i < 400; i++) built.sample(9, 1 / 60, true, false);
   assert.equal(built.wantLow, false, 'frames that built a layer are not the steady-state cost');
+});
+
+test('quality monitor: cheap draws with janky frame intervals still trip low (cost outside draw)', () => {
+  // draw() is cheap (1.2 ms) but 40 % of the frames arrive late: the GPU process is the bottleneck.
+  const q = createQualityMonitor();
+  for (let i = 0; i < Q_SKIP + Q_WIN + 5 * Q_EVERY; i++) q.sample(1.2, i % 5 < 2 ? 0.034 : 1 / 60, false, false);
+  assert.equal(q.wantLow, true);
+  assert.ok(q.stats.longShare >= 0.3);
+  // a short hiccup (one check's worth) does not switch a healthy device
+  const h = createQualityMonitor();
+  for (let i = 0; i < Q_SKIP + Q_WIN; i++) h.sample(1.2, 1 / 60, false, false);
+  for (let i = 0; i < 30; i++) h.sample(1.2, 0.04, false, false);
+  for (let i = 0; i < 400; i++) h.sample(1.2, 1 / 60, false, false);
+  assert.equal(h.wantLow, false);
+  // healthy device with an occasional long frame (5 %) stays on high
+  const ok = createQualityMonitor();
+  for (let i = 0; i < 600; i++) ok.sample(1.5, i % 20 === 0 ? 0.03 : 1 / 60, false, false);
+  assert.equal(ok.wantLow, false);
+  // a very slow device (12 fps, 20 ms draws) switches within ~2 s, before the window fills
+  const v = createQualityMonitor();
+  let t = 0;
+  while (!v.wantLow && t < 10) { v.sample(20, 1 / 12, false, false); t += 1 / 12; }
+  assert.equal(v.wantLow, true);
+  assert.ok(t < 2.5, `switched after ${t.toFixed(2)} s`);
+  // a healthy 60 fps device is not flagged by the early check
+  const e = createQualityMonitor();
+  for (let i = 0; i < 200; i++) e.sample(1.5, 1 / 60, false, false);
+  assert.equal(e.wantLow, false);
+});
+
+test('barPainter: thin ground bars as affine-mapped rects (one fillRect per segment), stub fallback = one path', async () => {
+  const { barPainter, fieldProjection } = await import('../src/engine/field.js');
+  const pr = fieldProjection({ w: 390, h: 844, k: 1, camX: 0, gy: 600 }, CONFIG);
+  const calls = [];
+  const base = { a: 3, b: 0, c: 0, d: 3, e: 5, f: 7 };
+  const ctx = {
+    getTransform: () => base,
+    setTransform: (...m) => calls.push(['set', ...m]),
+    fillRect: (...r) => calls.push(['rect', ...r]),
+  };
+  const bp = barPainter(ctx, pr);
+  bp.bar(100, 102, -50, 50, 4);
+  bp.done();
+  assert.equal(calls.filter((c) => c[0] === 'rect').length, 4);
+  assert.deepEqual(calls[calls.length - 1], ['set', 3, 0, 0, 3, 5, 7], 'done() restores the base transform');
+  // first segment: the unit square's origin lands on the projected corner (x0, z0), in device px
+  const o = pr.pt(100, -50);
+  const [, , , , , e, f] = calls[0];
+  assert.ok(Math.abs(e - (3 * o[0] + 5)) < 1e-9 && Math.abs(f - (3 * o[1] + 7)) < 1e-9);
+  // the far corner of the last segment is exact along the shared edge x0
+  const last = calls[calls.length - 3];
+  const v = pr.pt(100, 50);
+  assert.ok(Math.abs(last[5] + last[3] - (3 * v[0] + 5)) < 1e-6 && Math.abs(last[6] + last[4] - (3 * v[1] + 7)) < 1e-6);
+  // contexts without getTransform (test stubs) get one combined path
+  const s = stubCtx();
+  const sb = barPainter(s, pr);
+  sb.bar(0, 2, -10, 10);
+  sb.bar(10, 12, -10, 10);
+  sb.done();
+  assert.equal(s.__calls.byName.fill, 1);
+  assert.equal(s.__calls.byName.beginPath, 1);
 });

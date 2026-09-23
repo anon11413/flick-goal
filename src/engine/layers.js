@@ -50,7 +50,8 @@ export function createLayers({
   const order = [];
   const lastUsed = new Map();
   const toTouch = [];
-  const stats = { built: 0, inFlight: 0 };
+  const stats = { built: 0, inFlight: 0, maxBuildMs: 0 };
+  const clock = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
   let warmT = 0;
 
   const inFlight = () => { const p = getPhase(); return p === 'fly' || p === 'settle'; };
@@ -105,9 +106,11 @@ export function createLayers({
       const cv = makeCanvas(Math.max(1, Math.ceil(w * s)), Math.max(1, Math.ceil(h * s)));
       if (cv) {
         try {
+          const t0 = clock();
           const c = cv.getContext('2d');
           c.scale(s, s);
           draw(c, pal);
+          stats.maxBuildMs = Math.max(stats.maxBuildMs, clock() - t0);
           e = { img: cv, dead: false };
           stats.built++;
           if (inFlight()) stats.inFlight++;

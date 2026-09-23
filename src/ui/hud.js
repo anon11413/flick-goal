@@ -135,7 +135,20 @@ export function createHud({ stage, fx, onPause, onCoinPill }) {
     } else if (e.doink) {
       fx.popText('DOINK!', w / 2, midY, 'doink');
     }
-    fx.popText('+' + e.points, sp.x + Math.max(44, score.offsetWidth / 2 + 26), sp.y - 6, 'plus');
+    // "+N" beside the score, clear of the coin pill; on narrow screens (360 px) it goes under it
+    const text = '+' + e.points;
+    const halfW = 11 * text.length; // ~30 px bold digits
+    let px = sp.x + Math.max(44, score.offsetWidth / 2 + 26);
+    let py = sp.y - 6;
+    const sr = stage.getBoundingClientRect();
+    const pr = pill.el.getBoundingClientRect();
+    const pillLeft = pr.width > 0 ? pr.left - sr.left : w;
+    const pillBottom = pr.height > 0 ? pr.bottom - sr.top : 0;
+    if (px + halfW + 8 > pillLeft && py - 18 < pillBottom) {
+      px = sp.x;
+      py = sp.y + score.offsetHeight / 2 + 14;
+    }
+    fx.popText(text, px, py, 'plus');
   }
 
   function onClockLow() {

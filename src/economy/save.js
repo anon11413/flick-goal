@@ -290,7 +290,9 @@ export function createSaveManager({ storage, cfg = CONFIG, now = () => Date.now(
 
   let data;
   const raw = read(key);
-  if (raw === null || raw === undefined) {
+  // An unreadable v2 save (corrupt JSON, not an object) is treated like a first launch, so a
+  // player with a valid v1 save still gets the import instead of a wiped save.
+  if (raw === null || raw === undefined || !isObj(parse(raw))) {
     // First v2 launch: import a v1 player once (read only), else a fresh save.
     const v1 = v1Key && v1Key !== key ? read(v1Key) : null;
     data = v1 !== null && v1 !== undefined ? importV1(v1, cfg, now()) : defaultSave(cfg);

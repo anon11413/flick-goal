@@ -10,7 +10,7 @@
 
 import {
   mixColor, withAlpha, memo, softSpot, fillPathV, fillPathH, fillPathR, fillRectV, curAlpha,
-  roundRectPath, circlePath, hash, wrap, clamp01,
+  roundRectPath, circlePath, hash, wrap, clamp01, cachedSprite,
 } from '../../paint.js';
 import { warmLayer } from './warm.js';
 
@@ -48,25 +48,18 @@ function tiles(view, par, tile, fn, pad = 0) {
 }
 
 /**
- * Tiny twinkling dots in a handful of alpha buckets: one path + fill per bucket instead of a
- * globalAlpha switch and fillRect per dot. dots = flat [x, y, size, alpha, ...].
+ * Tiny twinkling dots: one fillRect per dot with its own alpha. Axis-aligned solid rects batch
+ * into a single GPU draw, whereas one path of many rect() contours per alpha bucket is filled
+ * through a full-bounds coverage mask every frame (measured: ~2-3 ms of GPU-process time per
+ * frame for 45 stars at 3x). dots = flat [x, y, size, alpha, ...].
  */
-function dotBuckets(ctx, dots, levels = 4) {
+function dotBuckets(ctx, dots) {
   const ga = curAlpha(ctx);
-  for (let b = 0; b < levels; b++) {
-    const lo = b / levels;
-    const hi = (b + 1) / levels;
-    let any = false;
-    ctx.beginPath();
-    for (let i = 0; i < dots.length; i += 4) {
-      const a = dots[i + 3];
-      if (a <= lo || a > hi) continue;
-      ctx.rect(dots[i], dots[i + 1], dots[i + 2], dots[i + 2]);
-      any = true;
-    }
-    if (!any) continue;
-    ctx.globalAlpha = ga * (lo + hi) / 2;
-    ctx.fill();
+  for (let i = 0; i < dots.length; i += 4) {
+    const a = dots[i + 3];
+    if (!(a > 0.01)) continue;
+    ctx.globalAlpha = ga * Math.min(1, a);
+    ctx.fillRect(dots[i], dots[i + 1], dots[i + 2], dots[i + 2]);
   }
   ctx.globalAlpha = ga;
 }
@@ -103,6 +96,21 @@ function rays(ctx, x, y, len, n, time, color, a, spread = TAU, dir = 0) {
     ctx.closePath();
   }
   fillPathR(ctx, x, y, len, memo('rays', color, a, 0, () => [0, withAlpha(color, a), 0.35, withAlpha(color, a * 0.4), 1, withAlpha(color, 0)]));
+}
+
+/**
+ * The sliced sun as a cached layer (the per-frame version clips to a many-rect path, which the
+ * GPU process rasterizes as a mask every frame). gapsRel = [[dy from centre, height], ...].
+ */
+function cachedSun(ctx, view, cache, key, x, y, r, colors, gapsRel, pal) {
+  const S = Math.ceil(2 * r + 4);
+  // colors(p) -> [top, bottom] from the palette the layer is built for (next-tier pre-warm)
+  const draw = (c, p) => {
+    const [top, bottom] = colors(p || pal);
+    slicedSun(c, S / 2, S / 2, r, top, bottom, gapsRel.map(([dy, gh]) => [S / 2 + dy, gh]));
+  };
+  warmLayer(ctx, view, cache, key, S, S, pal, draw);
+  layer(ctx, cache, key, S, S, x - S / 2, y - S / 2, pal, draw);
 }
 
 /** Disc filled with a vertical gradient, sliced by horizontal gaps (retro sun). */
@@ -229,18 +237,19 @@ function drawClouds(ctx, view, pal, time, cache, { count = 5, alpha = 0.95, lit 
 }
 
 function drawHills(ctx, view, color, par, amp, base, seed, topColor = null) {
+  const step = view.lo ? 16 : 8;
   const off = view.camX * view.k * par;
   const y0 = view.groundY + 2;
   if (y0 - base - amp > view.h || y0 < -4) return;
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.moveTo(0, y0);
-  for (let x = 0; x <= view.w + 8; x += 8) {
+  for (let x = 0; x <= view.w + step; x += step) {
     const u = (x + off) / 120;
     const y = y0 - base - amp * (0.55 + 0.45 * Math.sin(u + seed) * Math.sin(u * 0.37 + seed * 2));
     ctx.lineTo(x, y);
   }
-  ctx.lineTo(view.w + 8, y0);
+  ctx.lineTo(Math.ceil((view.w + step) / step) * step, y0);
   ctx.closePath();
   if (topColor) fillPathV(ctx, y0 - base - amp, y0, memo('v2', topColor, color, 0, () => [0, topColor, 1, color]));
   else ctx.fill();
@@ -265,7 +274,7 @@ function drawStars(ctx, view, count, time, color = '#FFFFFF') {
     }
   }
   ctx.globalAlpha = 1;
-  dotBuckets(ctx, dots, 4);
+  dotBuckets(ctx, dots);
 }
 
 // ---------------------------------------------------------------- stadium stands
@@ -574,6 +583,18 @@ function towerTile(c, W, H, hgt, p) {
   c.fill();
 }
 
+/** 4 x 2 floodlight lamps, top-left lamp centre at (cx - 15, y). */
+function paintLamps(ctx, cx, y) {
+  ctx.fillStyle = '#FFFDF2';
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 2; j++) {
+      ctx.beginPath();
+      ctx.arc(cx - 15 + i * 10, y + j * 10, 3.4, 0, TAU);
+      ctx.fill();
+    }
+  }
+}
+
 function decorNight(ctx, view, pal, time, cache) {
   drawStars(ctx, view, 60, time);
   // Moon sits right of the logo / score and below the coin pill.
@@ -607,6 +628,11 @@ function decorNight(ctx, view, pal, time, cache) {
   // camera moves (a size change would mean a new layer build, possibly mid-flight).
   const base = view.groundY - 30;
   const hgt = Math.round(clamp(view.h * 0.22, 90, 330));
+  // keep the lamp heads out of the HUD band (score, clock, pills): push the whole tower down
+  // (its foot hides behind the stands) instead of resizing the cached tower tile
+  const safeTop = Math.max(124, view.h * 0.17);
+  const lift = Math.max(0, safeTop - (base - hgt - 22));
+  const top = base - hgt + lift;
   const TW = 60;
   const TH = Math.ceil(hgt + 40);
   const heads = [];
@@ -616,7 +642,7 @@ function decorNight(ctx, view, pal, time, cache) {
     if (tx < -200 || tx > view.w + 200) return;
     heads.push(tx);
     seeds.push(idx);
-    layer(ctx, cache, 'pro:ntw', TW, TH, tx - TW / 2, base - hgt - 30, pal, (c, p) => towerTile(c, TW, TH, hgt, p));
+    layer(ctx, cache, 'pro:ntw', TW, TH, tx - TW / 2, top - 30, pal, (c, p) => towerTile(c, TW, TH, hgt, p));
   }, 200);
   const glowCol = '#FFF4C2';
   // volumetric floodlight beams + dust motes (additive)
@@ -624,7 +650,7 @@ function decorNight(ctx, view, pal, time, cache) {
   ctx.globalCompositeOperation = 'lighter';
   heads.forEach((tx, hi) => {
     const seed = seeds[hi] * 7.31;
-    const ty = base - hgt - 10;
+    const ty = top - 10;
     const bottom = view.groundY + 4;
     if (bottom <= ty) return;
     ctx.beginPath();
@@ -650,12 +676,12 @@ function decorNight(ctx, view, pal, time, cache) {
       const s = 0.8 + hash(i * 5.7) * 1.2;
       motes.push(x, y, s, (0.25 + 0.5 * (0.5 + 0.5 * Math.sin(time * 3 + i * 2.1))) * (1 - u * 0.6));
     }
-    dotBuckets(ctx, motes, 3);
+    dotBuckets(ctx, motes);
   });
   ctx.restore();
   // lamp heads: hot lamps with bloom and a horizontal lens streak
   for (const tx of heads) {
-    const hy = base - hgt - 10;
+    const hy = top - 10;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     glow(ctx, tx, hy, view.lo ? 40 : 64, glowCol, 0.42 + 0.04 * Math.sin(time * 2 + tx));
@@ -665,17 +691,13 @@ function decorNight(ctx, view, pal, time, cache) {
       fillPathH(ctx, tx - 80, tx + 80, memo('streak', glowCol, 0, 0, () => [0, withAlpha(glowCol, 0), 0.5, withAlpha(glowCol, 0.5), 1, withAlpha(glowCol, 0)]));
     }
     ctx.restore();
-    ctx.fillStyle = '#FFFDF2';
-    ctx.beginPath();
-    for (let i = 0; i < 4; i++) {
-      for (let j = 0; j < 2; j++) {
-        const x = tx - 15 + i * 10;
-        const y = base - hgt - 16 + j * 10;
-        ctx.moveTo(x + 3.4, y);
-        ctx.arc(x, y, 3.4, 0, TAU);
-      }
-    }
-    ctx.fill();
+    // the 4 x 2 lamp grid is one sprite (one path of 8 discs is a coverage mask per frame)
+    const lamps = cachedSprite('pro:lamps', 40 * 4, 20 * 4, (c) => {
+      c.scale(4, 4);
+      paintLamps(c, 20, 5);
+    });
+    if (lamps) ctx.drawImage(lamps, tx - 20, top - 21, 40, 20);
+    else paintLamps(ctx, tx, top - 16);
   }
   hazeBand(ctx, view, mixColor(pal.skyBottom, glowCol, 0.35), 80, 0.45);
   drawScoreboard(ctx, view, pal, cache, 'pro:nsb', 72, true);
@@ -983,8 +1005,8 @@ function decorSunset(ctx, view, pal, time, cache) {
   glow(ctx, sunX, sunY, sr * (view.lo ? 2.2 : 3.4), mixColor(pal.accent, '#FFD08A', 0.6), 0.5);
   if (!view.lo) rays(ctx, sunX, sunY, view.h * 0.8, 11, time, '#FFE9C0', 0.16, Math.PI * 1.1, -Math.PI / 2);
   const gaps = [];
-  for (let i = 0; i < 4; i++) gaps.push([sunY + sr * (0.2 + i * 0.2), 3 + i * 1.6]);
-  slicedSun(ctx, sunX, sunY, sr, sunTop, sunBot, gaps);
+  for (let i = 0; i < 4; i++) gaps.push([sr * (0.2 + i * 0.2), 3 + i * 1.6]);
+  cachedSun(ctx, view, cache, 'pro:ssun', sunX, sunY, sr, (p) => [mixColor('#FFF3B0', p.accent, 0.15), mixColor(p.accent, '#FFB35C', 0.35)], gaps, pal);
   glow(ctx, sunX, sunY - sr * 0.35, sr * 0.9, '#FFF6D8', 0.14);
   // streaky clouds lit from below
   const vy = view.camY * view.k * 0.1;
@@ -1139,8 +1161,8 @@ function decorArcade(ctx, view, pal, time, cache) {
   glow(ctx, sx, sy, sr * (view.lo ? 2 : 3), '#FF2BD6', 0.42);
   glow(ctx, sx, sy - sr * 0.4, sr * 1.6, '#FFB000', 0.2);
   const gaps = [];
-  for (let i = 0; i < 6; i++) gaps.push([sy + sr * (0.05 + i * 0.16), 2 + i * 1.4]);
-  slicedSun(ctx, sx, sy, sr, '#FFE600', '#FF2BD6', gaps);
+  for (let i = 0; i < 6; i++) gaps.push([sr * (0.05 + i * 0.16), 2 + i * 1.4]);
+  cachedSun(ctx, view, cache, 'pro:asun', sx, sy, sr, () => ['#FFE600', '#FF2BD6'], gaps, pal);
   const SW = 520;
   const SH = 92;
   tiles(view, 0.12, SW, (x0) => layer(ctx, cache, 'pro:ask', SW, SH, x0, view.groundY + 1 - SH, pal, (c, p) => skylineTile(c, SW, SH, p)));

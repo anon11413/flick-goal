@@ -324,7 +324,9 @@ export function createStore(app) {
     it.owned && it.active ? h('span.card-badge', { html: icon('check') }) : null);
     hero.addEventListener('click', () => onUpgrade(it, hero));
     wrap.appendChild(hero);
-    wrap.appendChild(h('div.fine.hero-fine', 'Your first two kicks always show the slider.'));
+    // tutorial note only while it is still true for this player (first two kicks ever)
+    const kicks = (app.save && app.save.data && app.save.data.tutorial && app.save.data.tutorial.kicks) | 0;
+    if (!it.owned && kicks < tutorialKicks(app)) wrap.appendChild(h('div.fine.hero-fine', 'New players see the slider on their first two kicks.'));
     return wrap;
   }
 
@@ -536,4 +538,10 @@ export function createStore(app) {
 
   applyBg();
   return { el, enter, leave, tick, setTab, refresh: render, get tab() { return tab; } };
+}
+
+/** Slider tutorial length (kicks) from the app config. */
+function tutorialKicks(app) {
+  const n = app && app.cfg && app.cfg.aim && app.cfg.aim.tutorialKicks;
+  return Number.isFinite(n) ? n : 2;
 }

@@ -16,10 +16,10 @@
 
 import {
   mixColor, withAlpha, memo, softSpot, fillPathV, fillRectV, fillPathH, circlePath, roundRectPath,
-  hash, wrap,
+  hash, wrap, cachedSprite, textWidth,
 } from '../../paint.js';
 import {
-  quadPath, groundFrame, FIELD_FONT, FIELD_LEN_YD, BORDER, endlessLineXs, endlessNumberAt,
+  quadPath, quadSub, barPainter, groundFrame, FIELD_FONT, FIELD_LEN_YD, BORDER, endlessLineXs, endlessNumberAt,
 } from '../../field.js';
 import { CROWD, SKIN_TONES, THEMES } from '../../themes.js';
 import { lightOf } from './lights.js';
@@ -347,19 +347,19 @@ function drawEndZone(ctx, pr, xa, xb, st, words, f, detail = 1) {
   fillPathV(ctx, yF, yN, ZONE_SHADE);
   ctx.fillStyle = withAlpha('#000000', 0.08);
   const step = 26;
+  ctx.beginPath();
   for (let z = -W - (xb - xa); z < W + (xb - xa); z += step * 2) {
     const a = pr.pt(xa, z);
     const b = pr.pt(xa, z + step);
     const c = pr.pt(xb, z + step + (xb - xa));
     const d = pr.pt(xb, z + (xb - xa));
-    ctx.beginPath();
     ctx.moveTo(a[0], a[1]);
     ctx.lineTo(b[0], b[1]);
     ctx.lineTo(c[0], c[1]);
     ctx.lineTo(d[0], d[1]);
     ctx.closePath();
-    ctx.fill();
   }
+  ctx.fill();
   const inset = 7;
   const span = Math.max(10, xb - xa - inset * 2);
   const cx = (xa + xb) / 2;
@@ -371,27 +371,32 @@ function drawEndZone(ctx, pr, xa, xb, st, words, f, detail = 1) {
     ctx.font = `900 ${F}px ${FIELD_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const m = typeof ctx.measureText === 'function' ? ctx.measureText(word) : null;
+    const m = { width: textWidth(ctx, word) };
     const tw = (m && m.width) || F * 0.62 * word.length;
     const q = Math.min(1, span / Math.max(1, tw));
     ctx.scale(q, 1);
+    const lo = f && f.lowQ; // low tier: one text pass fewer per word
     if (st.zoneGlow) {
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = withAlpha(st.zoneGlow, 0.35);
-      ctx.strokeText(word, 0, F * 0.04);
+      if (!lo) {
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = withAlpha(st.zoneGlow, 0.35);
+        ctx.strokeText(word, 0, F * 0.04);
+      }
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = withAlpha(st.zoneGlow, 0.95);
       ctx.strokeText(word, 0, F * 0.04);
       ctx.fillStyle = withAlpha('#FFFFFF', 0.88);
     } else {
       // painted letters: dark bleed edge, white paint, sun-side sheen
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = withAlpha(mixColor(st.zone, '#000000', 0.5), 0.35);
-      ctx.strokeText(word, 0, F * 0.08);
+      if (!lo) {
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = withAlpha(mixColor(st.zone, '#000000', 0.5), 0.35);
+        ctx.strokeText(word, 0, F * 0.08);
+      }
       ctx.fillStyle = withAlpha('#FFFFFF', 0.93);
     }
     ctx.fillText(word, 0, F * 0.04);
-    if (!st.zoneGlow) {
+    if (!st.zoneGlow && !lo) {
       ctx.fillStyle = withAlpha(st.zone, 0.12);
       ctx.fillText(word, 0, F * 0.16);
     }
@@ -499,14 +504,15 @@ export function drawProFieldLayout(ctx, f) {
   ctx.fillStyle = pal.groundDark;
   const j0 = Math.max(0, Math.floor((G - xb) / (5 * U)));
   const j1 = Math.min(19, Math.ceil((G - xa) / (5 * U)));
+  ctx.beginPath();
   for (let j = j0; j <= j1; j++) {
     if (j % 2 === 0) continue;
     const x1 = G - 5 * U * j;
     const x0 = x1 - 5 * U;
     if (x1 < xa || x0 > xb) continue;
-    quadPath(ctx, pr, Math.max(x0, xa), Math.min(x1, xb), -W, W);
-    ctx.fill();
+    quadSub(ctx, pr, Math.max(x0, xa), Math.min(x1, xb), -W, W);
   }
+  ctx.fill();
   if (detail > 0.3) drawSurfaceFx(ctx, pr, fd, pal, st, xa, xb, U, f);
 
   if (E - 10 * U < pr.xMax && E > pr.xMin) drawEndZone(ctx, pr, G, E, st, fd.words || ['FLICK'], f, detail);
@@ -522,7 +528,14 @@ export function drawProFieldLayout(ctx, f) {
   }
   if (glow) neonGrid(ctx, pr, st, lines, xa, xb, U, 0);
   ctx.fillStyle = lineFill;
-  for (const [x, hw] of lines) { quadPath(ctx, pr, x - hw, x + hw, -W, W); ctx.fill(); }
+  let bp = barPainter(ctx, pr);
+  for (const [x, hw] of lines) bp.bar(x - hw, x + hw, -W, W, f.lowQ ? 2 : 4);
+  for (const ex of [E, Efar]) {
+    if (ex < pr.xMin - 10 || ex > pr.xMax + 10) continue;
+    const sgn = ex === E ? 1 : -1;
+    bp.bar(ex - sgn * 1.2, ex + sgn * BORDER * 0.6, -W - BORDER, W + BORDER, f.lowQ ? 4 : 8);
+  }
+  bp.done();
   const bx0 = Math.max(pr.xMin, Efar - BORDER * 0.6);
   const bx1 = Math.min(pr.xMax, E + BORDER * 0.6);
   if (bx1 > bx0) {
@@ -531,22 +544,18 @@ export function drawProFieldLayout(ctx, f) {
     quadPath(ctx, pr, bx0, bx1, -W - BORDER, -W);
     ctx.fill();
   }
-  for (const ex of [E, Efar]) {
-    if (ex < pr.xMin - 10 || ex > pr.xMax + 10) continue;
-    const sgn = ex === E ? 1 : -1;
-    quadPath(ctx, pr, ex - sgn * 1.2, ex + sgn * BORDER * 0.6, -W - BORDER, W + BORDER);
-    ctx.fill();
-  }
   if (detail > 0.3) {
     teamArea(ctx, pr, pal, glow, lineFill, Math.max(pr.xMin, Efar), Math.min(pr.xMax, E + BORDER * 0.6));
     const hz = cfg.field.hashDepth;
     ctx.fillStyle = withAlpha(st.line, st.lineA * 0.9);
     const y0 = Math.max(1, Math.ceil((G - xb) / U));
     const y1 = Math.min(FIELD_LEN_YD - 1, Math.floor((G - xa) / U));
+    bp = barPainter(ctx, pr);
     for (let yd = y0; yd <= y1; yd++) {
       if (yd % 5 === 0) continue;
-      hashes(ctx, pr, G - yd * U, hz, W);
+      hashes(bp, G - yd * U, hz, W, f.lowQ);
     }
+    bp.done();
     const nz = W - 12 * U;
     for (let n = 10; n <= 90; n += 10) {
       const x = G - n * U;
@@ -584,34 +593,33 @@ export function drawProFieldLayout(ctx, f) {
 function neonGrid(ctx, pr, st, lines, xa, xb, U, O) {
   const W = pr.W;
   ctx.fillStyle = withAlpha(st.line, 0.16);
-  for (const [x, hw] of lines) { quadPath(ctx, pr, x - hw * 3.4, x + hw * 3.4, -W, W); ctx.fill(); }
-  ctx.strokeStyle = withAlpha(st.line, 0.13);
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let x = Math.ceil((xa - O) / U) * U + O; x <= xb; x += U) {
-    const a = pr.pt(x, -W);
-    const b = pr.pt(x, W);
-    ctx.moveTo(a[0], a[1]);
-    ctx.lineTo(b[0], b[1]);
-  }
+  let bp = barPainter(ctx, pr);
+  for (const [x, hw] of lines) bp.bar(x - hw * 3.4, x + hw * 3.4, -W, W, 4);
+  bp.done();
+  // Thin grid: filled geometry, not a stroke. Stroking one path of dozens of translucent lines
+  // makes the GPU process build a coverage mask for the whole field every frame (~1.5 ms at 3x).
+  // Yard-wise lines are thin painted quads in one path; depth rows are horizontal rects.
+  ctx.fillStyle = withAlpha(st.line, 0.13);
+  const hw = 0.5 / Math.max(0.2, pr.k);
+  bp = barPainter(ctx, pr);
+  for (let x = Math.ceil((xa - O) / U) * U + O; x <= xb; x += U) bp.bar(x - hw, x + hw, -W, W, 2);
+  bp.done();
   for (let z = -W + 40; z < W; z += 40) {
     const a = pr.pt(xa, z);
     const b = pr.pt(xb, z);
-    ctx.moveTo(a[0], a[1]);
-    ctx.lineTo(b[0], b[1]);
+    const x0 = Math.min(a[0], b[0]);
+    const x1 = Math.max(a[0], b[0]);
+    if (x1 > x0) ctx.fillRect(x0, a[1] - 0.5, x1 - x0, 1);
   }
-  ctx.stroke();
 }
 
-function hashes(ctx, pr, x, hz, W) {
-  quadPath(ctx, pr, x - 0.7, x + 0.7, hz, hz + 7);
-  ctx.fill();
-  quadPath(ctx, pr, x - 0.7, x + 0.7, -hz - 7, -hz);
-  ctx.fill();
-  quadPath(ctx, pr, x - 0.7, x + 0.7, W - 9, W - 2);
-  ctx.fill();
-  quadPath(ctx, pr, x - 0.7, x + 0.7, -W + 2, -W + 9);
-  ctx.fill();
+/** One yard's four hash marks (bar painter, see engine/field.js barPainter). */
+function hashes(bp, x, hz, W, low) {
+  bp.bar(x - 0.7, x + 0.7, hz, hz + 7);
+  bp.bar(x - 0.7, x + 0.7, -hz - 7, -hz);
+  if (low) return; // low tier: inbound hashes only (the sideline ticks are tiny at phone size)
+  bp.bar(x - 0.7, x + 0.7, W - 9, W - 2);
+  bp.bar(x - 0.7, x + 0.7, -W + 2, -W + 9);
 }
 
 function teamArea(ctx, pr, pal, glow, lineFill, tx0, tx1) {
@@ -623,10 +631,9 @@ function teamArea(ctx, pr, pal, glow, lineFill, tx0, tx1) {
   ctx.fillStyle = withAlpha(pal.zone || pal.accent, glow ? 0.16 : 0.2);
   ctx.fill();
   ctx.fillStyle = withAlpha(glow ? (pal.zone || pal.accent) : '#FFD54F', 0.88);
-  for (let x = Math.floor(tx0 / 12) * 12; x < tx1; x += 12) {
-    quadPath(ctx, pr, x, x + 7, zA - 3, zA);
-    ctx.fill();
-  }
+  const bp = barPainter(ctx, pr);
+  for (let x = Math.floor(tx0 / 12) * 12; x < tx1; x += 12) bp.bar(x, x + 7, zA - 3, zA);
+  bp.done();
   ctx.fillStyle = lineFill;
   quadPath(ctx, pr, tx0, tx1, zB - 3, zB);
   ctx.fill();
@@ -674,26 +681,22 @@ function drawBehindEndLine(ctx, pr, f, fd, pal, st, L, E, detail, front) {
   if (!front) {
     if (ax1 > ax0) {
       if (neon) {
-        ctx.strokeStyle = withAlpha(pal.line, 0.1);
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (let x = Math.ceil(ax0 / F.yard) * F.yard; x <= ax1; x += F.yard) {
-          const a = pr.pt(x, zN);
-          const b = pr.pt(x, zF);
-          ctx.moveTo(a[0], a[1]);
-          ctx.lineTo(b[0], b[1]);
-        }
-        ctx.stroke();
+        ctx.fillStyle = withAlpha(pal.line, 0.1);
+        const hw = 0.5 / Math.max(0.2, pr.k);
+        const bp = barPainter(ctx, pr);
+        for (let x = Math.ceil(ax0 / F.yard) * F.yard; x <= ax1; x += F.yard) bp.bar(x - hw, x + hw, zN, zF, 2);
+        bp.done();
       } else {
         ctx.fillStyle = withAlpha('#000000', fd.surface === 'grass' ? 0.07 : 0.045);
         const band = 2 * F.yard;
+        ctx.beginPath();
         for (let x = Math.floor(ax0 / band) * band; x < ax1; x += band * 2) {
           const x0 = Math.max(ax0, x);
           const x1 = Math.min(ax1, x + band);
           if (x1 <= x0) continue;
-          quadPath(ctx, pr, x0, x1, zN, zF);
-          ctx.fill();
+          quadSub(ctx, pr, x0, x1, zN, zF);
         }
+        ctx.fill();
         if (detail > 0.3 && (fd.surface === 'snow' || fd.surface === 'sand')) {
           drawSurfaceFx(ctx, pr, fd, pal, st, ax0, ax1, F.yard, f);
         }
@@ -874,14 +877,31 @@ function photographer(ctx, pr, x, z, i, time, glow, L) {
   const sc = pr.s(z) * pr.k;
   if (sc < 0.25) return;
   const vest = glow || ['#FF6D00', '#FFD600', '#FF6D00', '#90CAF9', '#FFD600'][i % 5];
+  const skin = SKIN_TONES[i % SKIN_TONES.length];
   softSpot(ctx, px + 2 * sc, py, 12 * sc, 3.2 * sc, L.shadow, L.shadowA * 3);
+  // the figure is one cached sprite (13 draws each otherwise); vector fallback without canvases
+  const sp = cachedSprite(`pro:photo|${vest}|${skin}`, PHOTO_W * PHOTO_S, PHOTO_H * PHOTO_S, (c) => {
+    c.scale(PHOTO_S, PHOTO_S);
+    paintPhotographer(c, PHOTO_AX, PHOTO_H, 1, vest, skin);
+  });
+  if (sp) ctx.drawImage(sp, px - PHOTO_AX * sc, py - PHOTO_H * sc, PHOTO_W * sc, PHOTO_H * sc);
+  else paintPhotographer(ctx, px, py, sc, vest, skin);
+  const ph = (time * 0.7 + i * 0.37) % 1;
+  if (ph < 0.05) softSpot(ctx, px - 13 * sc, py - 12.7 * sc, 9 * sc, 9 * sc, '#FFFFFF', 0.95 * (1 - ph / 0.05));
+}
+// sprite box in figure units: 14 left of the feet (lens), 7 right, 18 up; 4 px per unit
+const PHOTO_AX = 14;
+const PHOTO_W = 21;
+const PHOTO_H = 18;
+const PHOTO_S = 4;
+function paintPhotographer(ctx, px, py, sc, vest, skin) {
   roundRectPath(ctx, px - 4 * sc, py - 11 * sc, 9 * sc, 11 * sc, 2.5 * sc);
   fillPathH(ctx, px - 4 * sc, px + 5 * sc, BODY_STOPS);
   ctx.fillStyle = vest;
   ctx.fillRect(px - 3.6 * sc, py - 10.5 * sc, 8 * sc, 5 * sc);
   ctx.fillStyle = withAlpha('#000000', 0.22);
   ctx.fillRect(px + 1.4 * sc, py - 10.5 * sc, 3 * sc, 5 * sc);
-  ctx.fillStyle = SKIN_TONES[i % SKIN_TONES.length];
+  ctx.fillStyle = skin;
   ctx.fillRect(px - 2.8 * sc, py - 16 * sc, 5.6 * sc, 5.4 * sc);
   ctx.fillStyle = withAlpha('#000000', 0.2);
   ctx.fillRect(px + 0.8 * sc, py - 16 * sc, 2 * sc, 5.4 * sc);
@@ -894,8 +914,6 @@ function photographer(ctx, pr, x, z, i, time, glow, L) {
   fillPathV(ctx, py - 14 * sc, py - 11.4 * sc, LENS_STOPS);
   ctx.fillStyle = '#222222';
   ctx.fillRect(px - 13.4 * sc, py - 14.2 * sc, 1.2 * sc, 3 * sc);
-  const ph = (time * 0.7 + i * 0.37) % 1;
-  if (ph < 0.05) softSpot(ctx, px - 13 * sc, py - 12.7 * sc, 9 * sc, 9 * sc, '#FFFFFF', 0.95 * (1 - ph / 0.05));
 }
 const BODY_STOPS = [0, '#3A4650', 0.5, '#263238', 1, '#151C20'];
 const LENS_STOPS = [0, '#FFFFFF', 0.5, '#E3E7EA', 1, '#9AA4AB'];
@@ -934,12 +952,15 @@ function paintBigNumber(ctx, n, fill, glow, maxW) {
   const F = 24;
   const str = String(Math.max(0, Math.floor(n)));
   const gap = 17;
-  const q = Math.min(1, maxW / Math.max(1, gap * str.length));
+  // squeeze wide numbers; the digits left of the line must also stay clear of the 5-yard line
+  const q = Math.min(1, maxW / Math.max(1, gap * str.length), (0.65 * maxW) / Math.max(1, (str.length - 1) * gap));
   ctx.font = `900 ${F}px ${FIELD_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   if (q < 1) ctx.scale(q, 1);
-  const x0 = -((str.length - 1) * gap) / 2;
+  // the yard line runs between the last two digits (as on a real field: "1|0", "14|0", "100|0"),
+  // never through the middle of a digit
+  const x0 = -(str.length - 1) * gap + gap / 2;
   if (glow) {
     ctx.lineWidth = 3;
     ctx.strokeStyle = withAlpha(glow, 0.45);
@@ -954,14 +975,15 @@ function drawSurfaceFx(ctx, pr, fd, pal, st, xa, xb, U, f) {
   const W = pr.W;
   if (fd.surface === 'snow') {
     ctx.fillStyle = withAlpha('#FFFFFF', 0.6);
+    ctx.beginPath();
     for (let x = Math.floor(xa / 40) * 40; x < xb; x += 40) {
       for (let i = 0; i < 3; i++) {
         const z = -W + hash(x * 0.13 + i * 7.1) * 2 * W;
         const len = 10 + hash(x + i) * 18;
-        quadPath(ctx, pr, x, x + len, z, z + 4);
-        ctx.fill();
+        quadSub(ctx, pr, x, x + len, z, z + 4);
       }
     }
+    ctx.fill();
     // drifts piled on both sidelines: blue-shaded body, bright crest
     for (const zSide of [W + 14, -W - 16]) {
       const sc = pr.s(zSide) * pr.k;
@@ -1034,14 +1056,15 @@ export function drawProEndlessLayout(ctx, f) {
   const step = 5 * U;
   const s0 = Math.floor((xa - O) / step);
   const s1 = Math.ceil((xb - O) / step);
+  ctx.beginPath();
   for (let j = s0; j <= s1; j++) {
     if (((j % 2) + 2) % 2 === 0) continue;
     const x0 = O + j * step;
     const x1 = x0 + step;
     if (x1 < xa || x0 > xb) continue;
-    quadPath(ctx, pr, Math.max(x0, xa), Math.min(x1, xb), -W, W);
-    ctx.fill();
+    quadSub(ctx, pr, Math.max(x0, xa), Math.min(x1, xb), -W, W);
   }
+  ctx.fill();
   if (detail > 0.3) drawSurfaceFx(ctx, pr, fd, pal, st, xa, xb, U, f);
 
   const glow = fd.surface === 'neon';
@@ -1049,11 +1072,12 @@ export function drawProEndlessLayout(ctx, f) {
   const marks = endlessLineXs(xa - 4, xb + 4, O, cfg);
   if (glow) neonGrid(ctx, pr, st, marks.map((m) => [m.x, m.j === 0 ? 1.9 : 1.05]), xa, xb, U, O);
   ctx.fillStyle = lineFill;
+  const lbp = barPainter(ctx, pr);
   for (const m of marks) {
     const hw = m.j === 0 ? 1.9 : 1.05;
-    quadPath(ctx, pr, m.x - hw, m.x + hw, -W, W);
-    ctx.fill();
+    lbp.bar(m.x - hw, m.x + hw, -W, W, f.lowQ ? 2 : 4);
   }
+  lbp.done();
   quadPath(ctx, pr, xa, xb, W, W + BORDER);
   ctx.fill();
   quadPath(ctx, pr, xa, xb, -W - BORDER, -W);
@@ -1065,10 +1089,12 @@ export function drawProEndlessLayout(ctx, f) {
     ctx.fillStyle = withAlpha(st.line, st.lineA * 0.9);
     const y0 = Math.ceil((xa - O) / U);
     const y1 = Math.floor((xb - O) / U);
+    const bp = barPainter(ctx, pr);
     for (let yd = y0; yd <= y1 && yd - y0 < 600; yd++) {
       if (yd % 5 === 0) continue;
-      hashes(ctx, pr, O + yd * U, hz, W);
+      hashes(bp, O + yd * U, hz, W, f.lowQ);
     }
+    bp.done();
     const nz = W - 12 * U;
     for (const m of marks) {
       if (m.j <= 0 || m.j % 2 !== 0) continue;

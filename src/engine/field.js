@@ -54,16 +54,69 @@ export function fieldProjection(fv, cfg = CONFIG) {
 
 /** Path of the ground quad x0..x1 x z0..z1. */
 export function quadPath(ctx, pr, x0, x1, z0, z1) {
+  ctx.beginPath();
+  quadSub(ctx, pr, x0, x1, z0, z1);
+}
+
+/**
+ * Append a ground quad to the current path (no beginPath). Batch many same-colour quads into one
+ * path and fill once: every fill() is a separate GPU draw, so hash marks / stripes / yard lines
+ * issued one by one cost far more than one combined path (all quads share the same winding).
+ */
+export function quadSub(ctx, pr, x0, x1, z0, z1) {
   const a = pr.pt(x0, z0);
   const b = pr.pt(x1, z0);
   const c = pr.pt(x1, z1);
   const d = pr.pt(x0, z1);
-  ctx.beginPath();
   ctx.moveTo(a[0], a[1]);
   ctx.lineTo(b[0], b[1]);
   ctx.lineTo(c[0], c[1]);
   ctx.lineTo(d[0], d[1]);
   ctx.closePath();
+}
+
+/**
+ * Painter for thin ground bars (yard lines, hash marks, grid lines, ticks). Each bar x0..x1 x
+ * z0..z1 is drawn as `segs` affine-mapped fillRects (parallelograms spanned by three projected
+ * corners, split along z so long lines keep their taper). Solid rects under any affine matrix
+ * batch into one GPU draw, whereas a translucent path fill (one per bar, or one many-contour
+ * path) makes the GPU process rasterize coverage for every bar each frame; on a phone-class
+ * GPU at 3x that was several ms per frame. Contexts without getTransform (test stubs) fall back
+ * to one combined path. Call done() after the last bar (restores the transform / fills).
+ */
+export function barPainter(ctx, pr) {
+  let m = null;
+  try { m = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null; } catch (_) { m = null; }
+  if (!m || !Number.isFinite(m.a) || !Number.isFinite(m.d)) {
+    ctx.beginPath();
+    return {
+      bar(x0, x1, z0, z1) { quadSub(ctx, pr, x0, x1, z0, z1); },
+      done() { ctx.fill(); },
+    };
+  }
+  const { a, b, c, d, e, f } = m;
+  return {
+    bar(x0, x1, z0, z1, segs = 1) {
+      for (let i = 0; i < segs; i++) {
+        const za = segs === 1 ? z0 : z0 + ((z1 - z0) * i) / segs;
+        const zb = segs === 1 ? z1 : z0 + ((z1 - z0) * (i + 1)) / segs;
+        const o = pr.pt(x0, za);
+        const u = pr.pt(x1, za);
+        const v = pr.pt(x0, zb);
+        const la = u[0] - o[0];
+        const lb = u[1] - o[1];
+        const lc = v[0] - o[0];
+        const ld = v[1] - o[1];
+        ctx.setTransform(
+          a * la + c * lb, b * la + d * lb,
+          a * lc + c * ld, b * lc + d * ld,
+          a * o[0] + c * o[1] + e, b * o[0] + d * o[1] + f,
+        );
+        ctx.fillRect(0, 0, 1, 1);
+      }
+    },
+    done() { ctx.setTransform(a, b, c, d, e, f); },
+  };
 }
 
 /**

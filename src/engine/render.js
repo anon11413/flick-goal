@@ -719,6 +719,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
       longShare: quality.stats.longShare,
       layersBuilt: layers.stats.built,
       layersBuiltInFlight: layers.stats.inFlight,
+      layerMaxBuildMs: layers.stats.maxBuildMs || 0,
       xfade: palT,
       adaptive: !!style.adaptive,
     };

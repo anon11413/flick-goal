@@ -127,14 +127,16 @@ function createModeChip(app) {
   const ic = h('span.mode-ic');
   const labels = h('span.mode-labels');
   const badge = h('span.mode-new', 'NEW');
-  const chip = h('button.mode-chip', { type: 'button', onclick: () => doSwitch() },
+  const chip = h('button.mode-chip', { type: 'button', onclick: (e) => doSwitch(e) },
     ic, labels, h('span.mode-swap', { html: icon('swap') }), badge);
-  const callout = h('button.mode-callout', { type: 'button', onclick: () => doSwitch() },
+  const callout = h('button.mode-callout', { type: 'button', onclick: (e) => { if (!callout.classList.contains('gone')) doSwitch(e); } },
     h('span.mode-callout-new', 'NEW:'), ' Endless mode! Tap to switch');
   callout.hidden = true;
   const el = h('div.mode-wrap', { dataset: { noTap: '' } }, callout, chip);
   let current = null;
   let busyT = 0;
+  let switching = false;      // inside doSwitch: the refresh triggered by the mode change must not repaint
+  let calloutShown = false;   // the callout was visible at some point during this menu visit
 
   function paint(mode, animate) {
     const m = MODES[mode] || MODES.field;
@@ -156,23 +158,39 @@ function createModeChip(app) {
     current = m.id;
   }
 
-  function doSwitch() {
+  function doSwitch(e) {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (now - busyT < 250) return; // double taps don't flip twice
     busyT = now;
-    const mode = app.toggleMode();
+    // app.toggleMode() refreshes the menu (BEST, badge); the label is painted here, once, so the
+    // old label slides out while the new one slides in.
+    switching = true;
+    let mode;
+    try { mode = app.toggleMode(); } finally { switching = false; }
     paint(mode, true);
     refresh();
+    // pointer clicks: drop focus so Space / Enter keep starting runs instead of re-switching
+    if (e && e.detail > 0) setTimeout(() => { const a = document.activeElement; if (a === chip || a === callout) a.blur(); }, 0);
   }
 
   function refresh() {
     const mode = app.currentMode();
-    if (mode !== current) paint(mode, false);
+    if (!switching && mode !== current) paint(mode, false);
     badge.hidden = !app.newBadgeVisible();
-    callout.hidden = !app.calloutVisible();
+    // Once shown on this visit, a dismissed callout keeps its space (faded out, not clickable)
+    // until the menu is left: the chip must not jump up under a finger that taps again.
+    const vis = app.calloutVisible();
+    if (vis) calloutShown = true;
+    callout.hidden = !vis && !calloutShown;
+    callout.classList.toggle('gone', !vis && calloutShown);
+    callout.tabIndex = vis ? 0 : -1;
+    callout.setAttribute('aria-hidden', vis ? 'false' : 'true');
   }
 
-  return { el, chip, callout, refresh };
+  /** New menu visit: a callout dismissed on the last visit no longer reserves space. */
+  function newVisit() { calloutShown = false; }
+
+  return { el, chip, callout, refresh, newVisit };
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +266,7 @@ export function createMenu(app) {
     pill,
     modeChip,
     enter() {
+      modeChip.newVisit();
       if (app.onMenuEnter) app.onMenuEnter();
       refresh();
     },

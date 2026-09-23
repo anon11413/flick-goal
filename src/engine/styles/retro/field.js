@@ -8,9 +8,9 @@
 // Pure drawing (ctx + projection from engine/field.js).
 
 import { CONFIG } from '../../../config.js';
-import { mixColor, withAlpha, circlePath, roundRectPath, hash } from '../../paint.js';
+import { mixColor, withAlpha, circlePath, roundRectPath, hash, textWidth } from '../../paint.js';
 import {
-  quadPath, groundFrame, FIELD_FONT, FIELD_LEN_YD, BORDER, endlessLineXs, endlessNumberAt,
+  quadPath, barPainter, groundFrame, FIELD_FONT, FIELD_LEN_YD, BORDER, endlessLineXs, endlessNumberAt,
 } from '../../field.js';
 import { CROWD, SKIN_TONES } from '../../themes.js';
 
@@ -149,7 +149,7 @@ function drawEndZone(ctx, pr, xa, xb, st, words, detail = 1) {
     ctx.font = `900 ${F}px ${FIELD_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const m = typeof ctx.measureText === 'function' ? ctx.measureText(word) : null;
+    const m = { width: textWidth(ctx, word) };
     const tw = (m && m.width) || F * 0.62 * word.length;
     const q = Math.min(1, span / Math.max(1, tw));
     ctx.scale(q, 1);
@@ -257,27 +257,22 @@ export function drawFieldLayout(ctx, fd, pal, fv, pr, time = 0, cfg = CONFIG) {
   }
   if (glow) {
     ctx.fillStyle = withAlpha(st.line, 0.18);
-    for (const [x, hw] of lines) { quadPath(ctx, pr, x - hw * 3, x + hw * 3, -W, W); ctx.fill(); }
+    const gb = barPainter(ctx, pr);
+    for (const [x, hw] of lines) gb.bar(x - hw * 3, x + hw * 3, -W, W, 4);
+    gb.done();
     // faint 1-yard grid + lengthwise grid lines for the neon look
-    ctx.strokeStyle = withAlpha(st.line, 0.12);
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = Math.ceil(xa / U) * U; x <= xb; x += U) {
-      const a = pr.pt(x, -W);
-      const b = pr.pt(x, W);
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(b[0], b[1]);
-    }
-    for (let z = -W + 40; z < W; z += 40) {
-      const a = pr.pt(xa, z);
-      const b = pr.pt(xb, z);
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(b[0], b[1]);
-    }
-    ctx.stroke();
+    neonThinGrid(ctx, pr, xa, xb, U, 0, withAlpha(st.line, 0.12));
   }
+  // translucent lines as batched bars (engine/field.js barPainter)
   ctx.fillStyle = lineFill;
-  for (const [x, hw] of lines) { quadPath(ctx, pr, x - hw, x + hw, -W, W); ctx.fill(); }
+  const lb = barPainter(ctx, pr);
+  for (const [x, hw] of lines) lb.bar(x - hw, x + hw, -W, W, 4);
+  for (const ex of [E, Efar]) {
+    if (ex < pr.xMin - 10 || ex > pr.xMax + 10) continue;
+    const sgn = ex === E ? 1 : -1;
+    lb.bar(ex - sgn * 1.2, ex + sgn * BORDER * 0.6, -W - BORDER, W + BORDER, 8);
+  }
+  lb.done();
   // sideline borders + end lines (6 ft white border around the field)
   const bx0 = Math.max(pr.xMin, Efar - BORDER * 0.6);
   const bx1 = Math.min(pr.xMax, E + BORDER * 0.6);
@@ -285,12 +280,6 @@ export function drawFieldLayout(ctx, fd, pal, fv, pr, time = 0, cfg = CONFIG) {
     quadPath(ctx, pr, bx0, bx1, W, W + BORDER);
     ctx.fill();
     quadPath(ctx, pr, bx0, bx1, -W - BORDER, -W);
-    ctx.fill();
-  }
-  for (const ex of [E, Efar]) {
-    if (ex < pr.xMin - 10 || ex > pr.xMax + 10) continue;
-    const sgn = ex === E ? 1 : -1;
-    quadPath(ctx, pr, ex - sgn * 1.2, ex + sgn * BORDER * 0.6, -W - BORDER, W + BORDER);
     ctx.fill();
   }
 
@@ -305,10 +294,9 @@ export function drawFieldLayout(ctx, fd, pal, fv, pr, time = 0, cfg = CONFIG) {
       ctx.fillStyle = withAlpha(pal.zone || pal.accent, glow ? 0.16 : 0.2);
       ctx.fill();
       ctx.fillStyle = withAlpha(glow ? (pal.zone || pal.accent) : '#FFD54F', 0.9);
-      for (let x = Math.floor(tx0 / 12) * 12; x < tx1; x += 12) {
-        quadPath(ctx, pr, x, x + 7, zA - 3, zA);
-        ctx.fill();
-      }
+      const tb = barPainter(ctx, pr);
+      for (let x = Math.floor(tx0 / 12) * 12; x < tx1; x += 12) tb.bar(x, x + 7, zA - 3, zA);
+      tb.done();
       ctx.fillStyle = lineFill;
       quadPath(ctx, pr, tx0, tx1, zB - 3, zB);
       ctx.fill();
@@ -321,18 +309,12 @@ export function drawFieldLayout(ctx, fd, pal, fv, pr, time = 0, cfg = CONFIG) {
     ctx.fillStyle = withAlpha(st.line, st.lineA * 0.9);
     const y0 = Math.max(1, Math.ceil((G - xb) / U));
     const y1 = Math.min(FIELD_LEN_YD - 1, Math.floor((G - xa) / U));
+    const hb = barPainter(ctx, pr);
     for (let yd = y0; yd <= y1; yd++) {
       if (yd % 5 === 0) continue;
-      const x = G - yd * U;
-      quadPath(ctx, pr, x - 0.7, x + 0.7, hz, hz + 7);
-      ctx.fill();
-      quadPath(ctx, pr, x - 0.7, x + 0.7, -hz - 7, -hz);
-      ctx.fill();
-      quadPath(ctx, pr, x - 0.7, x + 0.7, W - 9, W - 2);
-      ctx.fill();
-      quadPath(ctx, pr, x - 0.7, x + 0.7, -W + 2, -W + 9);
-      ctx.fill();
+      hashBars(hb, G - yd * U, hz, W);
     }
+    hb.done();
   }
 
   // 7. yard numbers every 10 yards (near side upright, far side facing the far sideline)
@@ -609,6 +591,34 @@ function photographer(ctx, pr, x, z, i, time, glow) {
   }
 }
 
+/**
+ * Neon grid: faint 1-yard lines as thin painted bars + depth rows as horizontal rects (a stroke
+ * of dozens of translucent lines costs a whole-field coverage mask in the GPU process).
+ */
+function neonThinGrid(ctx, pr, xa, xb, U, O, color) {
+  const W = pr.W;
+  ctx.fillStyle = color;
+  const hw = 0.5 / Math.max(0.2, pr.k);
+  const bp = barPainter(ctx, pr);
+  for (let x = Math.ceil((xa - O) / U) * U + O; x <= xb; x += U) bp.bar(x - hw, x + hw, -W, W, 2);
+  bp.done();
+  for (let z = -W + 40; z < W; z += 40) {
+    const a = pr.pt(xa, z);
+    const b = pr.pt(xb, z);
+    const x0 = Math.min(a[0], b[0]);
+    const x1 = Math.max(a[0], b[0]);
+    if (x1 > x0) ctx.fillRect(x0, a[1] - 0.5, x1 - x0, 1);
+  }
+}
+
+/** One yard's four hash marks through a bar painter. */
+function hashBars(bp, x, hz, W) {
+  bp.bar(x - 0.7, x + 0.7, hz, hz + 7);
+  bp.bar(x - 0.7, x + 0.7, -hz - 7, -hz);
+  bp.bar(x - 0.7, x + 0.7, W - 9, W - 2);
+  bp.bar(x - 0.7, x + 0.7, -W + 2, -W + 9);
+}
+
 /** A yard number painted in the current ground frame (units = world units). */
 function paintYardNumber(ctx, n, arrow, fill, glow) {
   const F = 24;
@@ -744,34 +754,21 @@ export function drawEndlessLayout(ctx, fd, pal, fv, pr, time = 0, cfg = CONFIG) 
   const marks = endlessLineXs(xa - 4, xb + 4, O, cfg);
   if (glow) {
     ctx.fillStyle = withAlpha(st.line, 0.18);
+    const gb = barPainter(ctx, pr);
     for (const m of marks) {
       const hw = m.j === 0 ? 1.9 : 1.05;
-      quadPath(ctx, pr, m.x - hw * 3, m.x + hw * 3, -W, W);
-      ctx.fill();
+      gb.bar(m.x - hw * 3, m.x + hw * 3, -W, W, 4);
     }
-    ctx.strokeStyle = withAlpha(st.line, 0.12);
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = Math.ceil((xa - O) / U) * U + O; x <= xb; x += U) {
-      const a = pr.pt(x, -W);
-      const c = pr.pt(x, W);
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(c[0], c[1]);
-    }
-    for (let z = -W + 40; z < W; z += 40) {
-      const a = pr.pt(xa, z);
-      const c = pr.pt(xb, z);
-      ctx.moveTo(a[0], a[1]);
-      ctx.lineTo(c[0], c[1]);
-    }
-    ctx.stroke();
+    gb.done();
+    neonThinGrid(ctx, pr, xa, xb, U, O, withAlpha(st.line, 0.12));
   }
   ctx.fillStyle = lineFill;
+  const lb = barPainter(ctx, pr);
   for (const m of marks) {
     const hw = m.j === 0 ? 1.9 : 1.05;
-    quadPath(ctx, pr, m.x - hw, m.x + hw, -W, W);
-    ctx.fill();
+    lb.bar(m.x - hw, m.x + hw, -W, W, 4);
   }
+  lb.done();
   // sideline borders, continuous
   quadPath(ctx, pr, xa, xb, W, W + BORDER);
   ctx.fill();
@@ -786,10 +783,9 @@ export function drawEndlessLayout(ctx, fd, pal, fv, pr, time = 0, cfg = CONFIG) 
     ctx.fillStyle = withAlpha(pal.zone || pal.accent, glow ? 0.16 : 0.2);
     ctx.fill();
     ctx.fillStyle = withAlpha(glow ? (pal.zone || pal.accent) : '#FFD54F', 0.9);
-    for (let x = Math.floor(xa / 12) * 12; x < xb; x += 12) {
-      quadPath(ctx, pr, x, x + 7, zA - 3, zA);
-      ctx.fill();
-    }
+    const tb = barPainter(ctx, pr);
+    for (let x = Math.floor(xa / 12) * 12; x < xb; x += 12) tb.bar(x, x + 7, zA - 3, zA);
+    tb.done();
     ctx.fillStyle = lineFill;
     quadPath(ctx, pr, xa, xb, zB - 3, zB);
     ctx.fill();
@@ -801,18 +797,12 @@ export function drawEndlessLayout(ctx, fd, pal, fv, pr, time = 0, cfg = CONFIG) 
     ctx.fillStyle = withAlpha(st.line, st.lineA * 0.9);
     const y0 = Math.ceil((xa - O) / U);
     const y1 = Math.floor((xb - O) / U);
+    const hb = barPainter(ctx, pr);
     for (let yd = y0; yd <= y1 && yd - y0 < 600; yd++) {
       if (yd % 5 === 0) continue;
-      const x = O + yd * U;
-      quadPath(ctx, pr, x - 0.7, x + 0.7, hz, hz + 7);
-      ctx.fill();
-      quadPath(ctx, pr, x - 0.7, x + 0.7, -hz - 7, -hz);
-      ctx.fill();
-      quadPath(ctx, pr, x - 0.7, x + 0.7, W - 9, W - 2);
-      ctx.fill();
-      quadPath(ctx, pr, x - 0.7, x + 0.7, -W + 2, -W + 9);
-      ctx.fill();
+      hashBars(hb, O + yd * U, hz, W);
     }
+    hb.done();
   }
 
   // yard numbers every 10 yards past the start, counting up forever (no arrows)
@@ -866,12 +856,15 @@ function paintBigNumber(ctx, n, fill, glow, maxW) {
   const str = String(Math.max(0, Math.floor(n)));
   const gap = 17;
   const width = gap * str.length;
-  const q = Math.min(1, maxW / Math.max(1, width));
+  // squeeze wide numbers; the digits left of the line must also stay clear of the 5-yard line
+  const q = Math.min(1, maxW / Math.max(1, gap * str.length), (0.65 * maxW) / Math.max(1, (str.length - 1) * gap));
   ctx.font = `900 ${F}px ${FIELD_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   if (q < 1) ctx.scale(q, 1);
-  const x0 = -((str.length - 1) * gap) / 2;
+  // the yard line runs between the last two digits (as on a real field: "1|0", "14|0", "100|0"),
+  // never through the middle of a digit
+  const x0 = -(str.length - 1) * gap + gap / 2;
   if (glow) {
     ctx.lineWidth = 2;
     ctx.strokeStyle = withAlpha(glow, 0.5);

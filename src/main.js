@@ -166,6 +166,8 @@ const runCoins = createRunCoins(); // 2x offer only ever doubles coins not doubl
 let run = { bestAtRunStart: 0, bestYardsAtRunStart: 0, result: null };
 let storeReturn = 'menu';
 let calloutThisVisit = false; // the one-time Endless callout is showing on this menu visit
+let calloutCountDue = true;   // count a callout "show" once per app launch and once per return from a run
+let lastModeSwitchAt = -1e9;  // performance.now() of the last chip / callout switch
 
 // ---------------------------------------------------------------------------
 // Aim slider: tutorial (kicks 1-2) + Aim Slider upgrade + developer force (src/aimAssist.js).
@@ -203,6 +205,7 @@ function setMode(m, { quiet = false } = {}) {
     if (patch) Object.assign(d.ui, patch);
   });
   calloutThisVisit = false;
+  lastModeSwitchAt = performance.now();
   if (changed || game.mode !== mode) {
     if (game.phase === 'idle' || game.phase === 'over' || router.current !== 'playing') game.idle({ mode });
     tier = 0;
@@ -273,7 +276,12 @@ const app = {
   calloutVisible: () => calloutThisVisit && !save.data.ui.calloutDone && !save.data.ui.endlessTried,
   onMenuEnter() {
     calloutThisVisit = calloutVisible(save.data);
-    if (calloutThisVisit) applyUiPatch('menuVisit');
+    // Store / Settings round trips don't use up the one-time callout: a "visit" is the app launch
+    // or coming back from a run (game over / pause -> Home).
+    if (calloutThisVisit && calloutCountDue) {
+      applyUiPatch('menuVisit');
+      calloutCountDue = false;
+    }
   },
 
   // Aim Slider upgrade
@@ -355,6 +363,7 @@ router.onChange(() => { routeAt = performance.now(); });
 /** ms since the current route was shown (input grace periods). */
 function sinceRoute() { return performance.now() - routeAt; }
 const MENU_TAP_GRACE = 300;     // ms: taps right after arriving on the menu don't start a run
+const MODE_SWITCH_GRACE = 350;  // ms: menu taps right after a mode switch don't start a run
 const GAMEOVER_GRACE = 650;     // ms: Game Over buttons / Space ignore input while the card pops in
 
 // ---------------------------------------------------------------------------
@@ -365,6 +374,7 @@ function startRun() {
   sfx('whoosh');
   haptic('tap');
   game.newRun({ startMade: dev.startMade(), mode: currentMode() });
+  calloutCountDue = true;
   router.show('playing');
 }
 
@@ -729,12 +739,16 @@ document.addEventListener('click', (e) => {
   if (router.current !== 'menu' || isRotated() || flowBusy) return;
   if (fromUi(e) || overlayOpen()) return;
   if (sinceRoute() < MENU_TAP_GRACE) return; // e.g. a double-tap on Back / Home
+  if (performance.now() - lastModeSwitchAt < MODE_SWITCH_GRACE) return; // quick second tap near the chip
   startRun();
 }, true);
 
 // UI click feedback + drop focus after pointer clicks so Space/Enter keep driving the game.
 stage.addEventListener('click', (e) => {
-  const b = e.target && e.target.closest && e.target.closest('button');
+  // dispatch-time path: a handler may have replaced the element under the pointer (chip label)
+  const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
+  const b = path.find((n) => n && n.nodeType === 1 && n.tagName === 'BUTTON')
+    || (e.target && e.target.closest && e.target.closest('button'));
   if (!b) return;
   sfx('click');
   haptic('tap');

@@ -158,7 +158,9 @@ function decorNight(ctx, view, pal, time) {
   const par = 0.3;
   const tile = 380;
   const off = view.camX * view.k * par;
-  const hgt = Math.min(view.h * 0.42, 330);
+  // lamp heads stay below the HUD band (score, clock, pills): shorter towers on small screens
+  const safeTop = Math.max(124, view.h * 0.17);
+  const hgt = Math.max(30, Math.min(view.h * 0.42, 330, view.groundY - 30 - 22 - safeTop));
   for (let t = -1; t <= Math.ceil(view.w / tile) + 1; t++) {
     lightTower(ctx, t * tile - wrap(off, tile) + 90, view.groundY - 30, hgt, '#FFF4C2', time);
   }
