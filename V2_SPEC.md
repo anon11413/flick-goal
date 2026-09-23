@@ -741,3 +741,9 @@ Create `v2/hard-perfect` from the finished `v2/standard` commit (same save key a
 - **Do not** port the free "Aim slider" Settings toggle, `settings.showRail`, `?rail=`, or its solo aim-dots drawing (v2 uses no-slider's guide).
 - Re-run `checkSchedule` and the perfect-dwell floor tests with no-slider's slower `difficulty.speed` (slower sweep means longer dwell, so the floor only gets easier).
 - Open question for the owner: with the slider hidden (kick 3+), the gold PERFECT window has no visual cue; decide whether perfect is "by feel" or the dots should hint it (for example a gold tint on the dots inside the perfect window).
+
+**As built (v2/hard-perfect notes):**
+- Streak celebration: all of it (rings, sparkles, firework pops that grow with the streak) lives in the shared `render.js` perfect handler, which runs for both RETRO and PRO, instead of being split into each style's `onFx`. No `src/engine/styles/*` file changed. What the player sees is the same as asked. Move the extras into the styles only if RETRO and PRO should ever celebrate differently.
+- The open question above is **still open**. The build ships "by feel" (no dot hint) as a placeholder until the owner decides. The economy doesn't depend on it: with a random tap timing error of 30 / 60 / 100 ms, hard-perfect pays about 2.47 / 1.93 / 1.61 coins per goal against v2/standard's 1.99 / 1.84 / 1.63.
+- Both v2 builds share `flickgoal.save2` (D5), so bests and coins carry over between them, and hard-perfect scores perfects higher (3 to 6 points against 2 to 4). This is intended and noted in PLAYTEST.md. If the owner wants to compare the builds fairly, per-build bests (for example keyed by `CONFIG.version`) are a small change in `save.js`.
+- SPEC.md has a "v2/hard-perfect overrides" note at the top and pointers in §5, §6.3, §8 and §12.3.
