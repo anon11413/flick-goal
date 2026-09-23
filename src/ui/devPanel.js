@@ -1,7 +1,8 @@
-// Developer "start round" UI: hidden Settings unlock (tap the version label 5x), the DEVELOPER
-// settings section (stepper + quick chips), "DEV · R<n>" badges on the menu and HUD, and the
-// "DEV RUN" tag on Game Over. Everything is attached to the existing screens from outside, so
-// screens.js / hud.js stay untouched. Does nothing at all when cfg.dev.enabled is false.
+// Developer UI: hidden Settings unlock (tap the logo / version block 5x), the DEVELOPER settings
+// section (start round stepper + quick chips; v2: mode switch, slider force, graphics quality,
+// +10,000 coins, reset tutorial, tutorial read-out), "DEV · R<n>" badges on the menu and HUD, and
+// the "DEV RUN" tag on Game Over. Everything is attached to the existing screens from outside.
+// Does nothing at all when cfg.dev.enabled is false.
 
 import { h, setText } from './dom.js';
 
@@ -41,6 +42,13 @@ const CSS = `
 .dev-chip { height: 44px; border-radius: 999px; font-size: 17px; }
 .dev-chip.on { background: var(--green); color: #fff; box-shadow: 0 3px 0 rgba(0, 0, 0, .18); text-shadow: 0 1px 0 rgba(0, 0, 0, .18); }
 .dev-note { margin-top: 10px; font-size: 12px; font-weight: 800; color: #7b849b; line-height: 1.35; }
+.dev-sep { height: 2px; background: #f0f2f7; margin: 14px -14px 12px; }
+.dev-sub { font-size: 13px; font-weight: 900; letter-spacing: .08em; color: #99a1b7; margin: 0 0 6px; }
+.dev-seg { display: flex; gap: 6px; margin-bottom: 12px; }
+.dev-seg .dev-chip { flex: 1; font-size: 14px; letter-spacing: .02em; }
+.dev-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dev-btns .dev-chip { font-size: 15px; }
+.dev-readout { margin-top: 10px; font-size: 13px; font-weight: 900; color: var(--ink); background: var(--soft); border-radius: 12px; padding: 8px 10px; font-variant-numeric: tabular-nums; }
 /* The whole logo + version block is the unlock target: a 13px label alone is too small to hit
    5x in a row on a phone. manipulation stops fast taps being read as a double-tap zoom. */
 .set-about { touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: default; user-select: none; -webkit-user-select: none; }
@@ -79,12 +87,29 @@ export function createDevPanel({ app, dev, game, router, screens }) {
   const plus = h('button.dev-step', { type: 'button', attrs: { 'aria-label': 'Next round' }, onclick: () => dev.setStartRound(dev.storedRound() + 1) }, '+');
   const chips = CHIPS.map((n) => h('button.dev-chip', { type: 'button', dataset: { round: String(n) }, onclick: () => dev.setStartRound(n) }, String(n)));
   const note = h('div.dev-note');
+  // v2 controls
+  const seg = (name, options, onPick) => {
+    const btns = options.map(([v, label]) => h('button.dev-chip', { type: 'button', dataset: { v, seg: name }, onclick: () => { onPick(v); sync(); } }, label));
+    return { el: h('div.dev-seg', ...btns), btns };
+  };
+  const modeSeg = seg('mode', [['field', 'FIELD GOAL'], ['endless', 'ENDLESS']], (v) => app.setMode && app.setMode(v));
+  const sliderSeg = seg('slider', [['default', 'DEFAULT'], ['on', 'ON'], ['off', 'OFF']], (v) => dev.setSliderForce(v));
+  const gfxSeg = seg('gfx', [['auto', 'AUTO'], ['high', 'HIGH'], ['low', 'LOW']], (v) => dev.setGfx(v));
+  const addCoins = h('button.dev-chip.dev-coins', { type: 'button', onclick: () => app.devAddCoins && app.devAddCoins(addCoins) }, '+10,000 coins');
+  const resetTut = h('button.dev-chip.dev-reset-tut', { type: 'button', onclick: () => { if (app.devResetTutorial) app.devResetTutorial(); sync(); } }, 'Reset tutorial');
+  const readout = h('div.dev-readout');
   const section = h('div.dev-section', { dataset: { noTap: '' } },
     h('div.dev-head', 'DEVELOPER'),
     h('div.set-card.dev-card',
       h('div.dev-row', h('span.set-label', 'Start round'), h('div.dev-stepper', minus, val, plus)),
       h('div.dev-chips', ...chips),
-      note));
+      note,
+      h('div.dev-sep'),
+      h('div.dev-sub', 'MODE'), modeSeg.el,
+      h('div.dev-sub', 'AIM SLIDER'), sliderSeg.el,
+      h('div.dev-sub', 'GRAPHICS (PRO STADIUMS)'), gfxSeg.el,
+      h('div.dev-btns', addCoins, resetTut),
+      readout));
   section.hidden = true;
   const body = screens.settings.el.querySelector('.settings-body');
   const about = body && body.querySelector('.set-about');
@@ -95,6 +120,12 @@ export function createDevPanel({ app, dev, game, router, screens }) {
   const target = screens.settings.el.querySelector('.set-about') || screens.settings.el.querySelector('.version');
   let taps = 0;
   let lastTap = 0;
+  // The unlocking tap's own (synthesized) click arrives after the DEVELOPER section appeared and
+  // shifted the layout: swallow clicks briefly so it can't land on a freshly revealed control.
+  let swallowUntil = 0;
+  screens.settings.el.addEventListener('click', (e) => {
+    if (performance.now() < swallowUntil) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
   if (target) {
     target.addEventListener('pointerup', (e) => {
       if (e.button > 0) return;
@@ -107,6 +138,7 @@ export function createDevPanel({ app, dev, game, router, screens }) {
         return;
       }
       taps = 0;
+      swallowUntil = performance.now() + 450;
       const on = dev.toggle();
       app.sfx('click');
       app.dialogs.toast(on ? 'Developer mode ON' : 'Developer mode OFF', { kind: on ? 'ok' : 'info' });
@@ -121,6 +153,11 @@ export function createDevPanel({ app, dev, game, router, screens }) {
     minus.disabled = r <= 1;
     plus.disabled = r >= dev.maxRound;
     for (const c of chips) c.classList.toggle('on', Number(c.dataset.round) === r);
+    const curMode = app.currentMode ? app.currentMode() : 'field';
+    for (const b of modeSeg.btns) b.classList.toggle('on', b.dataset.v === curMode);
+    for (const b of sliderSeg.btns) b.classList.toggle('on', b.dataset.v === dev.storedSlider());
+    for (const b of gfxSeg.btns) b.classList.toggle('on', b.dataset.v === dev.storedGfx());
+    if (app.aimReadout) setText(readout, app.aimReadout());
     setText(note, r > 1
       ? `Runs start at kick #${r}, as if ${r - 1} goal${r === 2 ? ' was' : 's were'} made. Dev runs never change Best. Tap the version 5x to turn developer mode off.`
       : 'Round 1 = normal game. Tap the version 5x to turn developer mode off.');
@@ -142,6 +179,8 @@ export function createDevPanel({ app, dev, game, router, screens }) {
   dev.onChange(sync);
   router.onChange(sync);
   game.on('runStart', sync);
+  game.on('flick', sync);
+  game.on('modeChange', sync);
   sync();
   return { sync };
 }

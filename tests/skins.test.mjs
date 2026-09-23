@@ -2,59 +2,43 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG } from '../src/config.js';
 import {
-  BALL_SKINS, STADIUM_THEMES, drawBall, drawBallPreview, drawStadiumPreview, themePalette, mixColor, withAlpha,
-  drawField, fieldProjection,
+  BALL_SKINS, BALL_META, STADIUM_THEMES, THEMES, drawBall, drawBallPreview, drawStadiumPreview, themePalette,
+  mixColor, withAlpha, drawField, fieldProjection, stadiumInfo, styleOf, themeOf, stadiumDisplayName,
+  drawAimSliderPreview,
 } from '../src/engine/skins.js';
+import { endlessLineXs, endlessNumberAt } from '../src/engine/field.js';
+import { drawRetroDecor } from '../src/engine/styles/retro/decor.js';
+import { stubCtx } from './_stub.mjs';
 
-/**
- * Stub 2D context: every method is a no-op that records its call; gradient
- * factories return objects with addColorStop. Throws on non-finite geometry so
- * NaN bugs in draw code are caught.
- */
-function stubCtx() {
-  const calls = { n: 0, byName: {} };
-  const state = {};
-  const gradient = () => ({ addColorStop(o, c) { if (!(o >= 0 && o <= 1)) throw new Error('bad stop'); if (typeof c !== 'string') throw new Error('bad color'); } });
-  const handler = {
-    get(_, prop) {
-      if (prop === '__calls') return calls;
-      if (prop in state) return state[prop];
-      if (prop === 'createLinearGradient' || prop === 'createRadialGradient') {
-        return (...args) => { record(prop, args); return gradient(); };
-      }
-      return (...args) => { record(prop, args); return undefined; };
-    },
-    set(_, prop, value) {
-      if (prop === 'lineWidth' || prop === 'globalAlpha') {
-        if (!Number.isFinite(value)) throw new Error(`non-finite ${String(prop)}`);
-      }
-      state[prop] = value;
-      return true;
-    },
-  };
-  function record(name, args) {
-    for (const a of args) {
-      if (typeof a === 'number' && !Number.isFinite(a)) throw new Error(`non-finite arg to ${name}: ${args}`);
-    }
-    if ((name === 'arc' || name === 'ellipse') && args.slice(2, name === 'arc' ? 3 : 4).some((v) => v < 0)) {
-      throw new Error(`negative radius in ${name}`);
-    }
-    calls.n++;
-    calls.byName[name] = (calls.byName[name] || 0) + 1;
-  }
-  return new Proxy({}, handler);
-}
-
-test('BALL_SKINS keys equal the catalog ball ids', () => {
+test('BALL_SKINS / BALL_META keys equal the catalog ball ids', () => {
   const ids = CONFIG.catalog.balls.map((b) => b.id).sort();
   assert.deepEqual(Object.keys(BALL_SKINS).sort(), ids);
+  assert.deepEqual(Object.keys(BALL_META).sort(), ids);
   assert.ok(ids.length >= 12);
 });
 
-test('STADIUM_THEMES keys equal the catalog stadium ids', () => {
-  const ids = CONFIG.catalog.stadiums.map((s) => s.id).sort();
-  assert.deepEqual(Object.keys(STADIUM_THEMES).sort(), ids);
-  assert.ok(ids.length >= 5);
+test('base themes: five themes, every catalog stadium resolves to one of them', () => {
+  assert.deepEqual(Object.keys(STADIUM_THEMES).sort(), ['arcade', 'day', 'night', 'snow', 'sunset']);
+  assert.equal(STADIUM_THEMES, THEMES);
+  for (const s of CONFIG.catalog.stadiums) {
+    const info = stadiumInfo(s.id);
+    assert.equal(info.id, s.id);
+    assert.ok(THEMES[info.theme], s.id);
+    assert.ok(['retro', 'pro'].includes(info.style), s.id);
+    assert.equal(info.style, s.style, s.id);
+    assert.equal(themeOf(s.id), s.theme);
+    assert.equal(styleOf(s.id), s.style);
+  }
+  // every theme exists in both styles
+  for (const th of Object.keys(THEMES)) {
+    for (const st of ['retro', 'pro']) {
+      assert.ok(CONFIG.catalog.stadiums.some((s) => s.theme === th && s.style === st), `${th} ${st}`);
+    }
+  }
+  assert.deepEqual(stadiumInfo('nope'), { id: 'day', style: 'retro', theme: 'day', name: 'Day Game' });
+  assert.equal(stadiumInfo('night').style, 'retro');
+  assert.equal(stadiumDisplayName('pro_night'), 'Night Lights HD');
+  assert.equal(stadiumDisplayName('night'), 'Night Lights');
 });
 
 test('skin metadata is well formed', () => {
@@ -65,34 +49,37 @@ test('skin metadata is well formed', () => {
     assert.ok(['none', 'fire', 'sparkle', 'frost', 'pixel'].includes(s.fx), id);
     assert.equal(typeof s.draw, 'function');
   }
-  for (const [id, t] of Object.entries(STADIUM_THEMES)) {
+  for (const [id, t] of Object.entries(THEMES)) {
     assert.equal(t.id, id);
-    assert.ok(['clouds', 'night', 'snow', 'sunset', 'arcade'].includes(t.decor), id);
     assert.ok(t.palettes.length >= 4, id);
     for (const p of t.palettes) {
-      for (const key of ['skyTop', 'skyBottom', 'ground', 'groundDark', 'line', 'post', 'accent', 'uiBg']) {
+      for (const key of ['skyTop', 'skyBottom', 'ground', 'groundDark', 'line', 'post', 'accent', 'uiBg', 'zone']) {
         assert.match(p[key], /^#[0-9A-Fa-f]{6}$/, `${id}.${key}`);
       }
     }
-    assert.equal(typeof t.drawDecor, 'function');
+    assert.ok(t.field && ['grass', 'snow', 'sand', 'neon'].includes(t.field.surface), id);
+    assert.ok(Array.isArray(t.field.words) && t.field.words.length >= 1, id);
   }
 });
 
-test('every ball draw runs against a stub ctx without throwing', () => {
+test('every ball draw runs against a stub ctx in both styles without throwing', () => {
   for (const id of Object.keys(BALL_SKINS)) {
     for (const [r, rot, time] of [[16, 0, 0], [8, 1.3, 2.5], [40, -2, 10], [1, 3, 0.1]]) {
       const ctx = stubCtx();
       BALL_SKINS[id].draw(ctx, r, time, rot);
       assert.ok(ctx.__calls.n > 3, id);
-      drawBall(ctx, id, 10, 20, r, rot, time, 1.2, 0.8);
-      drawBallPreview(ctx, id, 64, time);
+      for (const style of ['retro', 'pro']) {
+        drawBall(ctx, id, 10, 20, r, rot, time, 1.2, 0.8, style);
+        drawBallPreview(ctx, id, 64, time, style);
+      }
     }
   }
   drawBall(stubCtx(), 'no-such-ball', 0, 0, 16, 0, 0); // falls back to classic
+  drawBall(stubCtx(), 'classic', 0, 0, 16, 0, 0, 1, 1, 'no-such-style');
 });
 
-test('every stadium decor + preview draws against a stub ctx without throwing', () => {
-  for (const id of Object.keys(STADIUM_THEMES)) {
+test('every retro decor + every catalog stadium preview (both layouts) draws against a stub ctx', () => {
+  for (const id of Object.keys(THEMES)) {
     for (let tier = 0; tier < 6; tier++) {
       const ctx = stubCtx();
       const pal = themePalette(id, tier);
@@ -101,37 +88,39 @@ test('every stadium decor + preview draws against a stub ctx without throwing', 
         { camX: 12345.6, camY: 500, k: 0.45, w: 360, h: 640, groundY: 1200 },
         { camX: -300, camY: -90, k: 1.2, w: 430, h: 932, groundY: -50 },
       ]) {
-        STADIUM_THEMES[id].drawDecor(ctx, view, pal, tier * 3.7);
+        drawRetroDecor(ctx, id, view, pal, tier * 3.7);
       }
       assert.ok(ctx.__calls.n > 10);
     }
-    drawStadiumPreview(stubCtx(), id, 96, 64);
-    drawStadiumPreview(stubCtx(), id, 320, 180);
+  }
+  for (const s of CONFIG.catalog.stadiums) {
+    for (const [w, h] of [[96, 64], [176, 112], [320, 180]]) {
+      const ctx = stubCtx();
+      drawStadiumPreview(ctx, s.id, w, h);
+      assert.ok(ctx.__calls.n > 30, `${s.id} ${w}x${h}`);
+      drawStadiumPreview(stubCtx(), s.id, w, h, { mode: 'endless', time: 3 });
+    }
   }
   drawStadiumPreview(stubCtx(), 'nope', 96, 64);
+  for (const t of [0, 0.4, 1.7, 5]) drawAimSliderPreview(stubCtx(), 320, 150, t);
 });
 
-test('themePalette cycles tiers and falls back to day', () => {
-  const day = STADIUM_THEMES.day.palettes;
+test('themePalette accepts catalog ids and base theme ids, cycles tiers and falls back to day', () => {
+  const day = THEMES.day.palettes;
   assert.equal(themePalette('day', 0), day[0]);
   assert.equal(themePalette('day', day.length), day[0]);
   assert.equal(themePalette('day', 1), day[1]);
   assert.equal(themePalette('unknown', 0), day[0]);
-  assert.equal(themePalette('night', -1), STADIUM_THEMES.night.palettes[STADIUM_THEMES.night.palettes.length - 1]);
+  assert.equal(themePalette('pro_day', 1), day[1]);
+  assert.equal(themePalette('pro_night', 0), THEMES.night.palettes[0]);
+  assert.equal(themePalette('night', -1), THEMES.night.palettes[THEMES.night.palettes.length - 1]);
 });
 
 test('color helpers', () => {
   assert.equal(mixColor('#000000', '#FFFFFF', 0.5), '#808080');
   assert.equal(mixColor('#FF0000', '#0000FF', 0), '#ff0000');
   assert.equal(withAlpha('#FFFFFF', 0.5), 'rgba(255,255,255,0.5)');
-});
-
-test('every stadium has a field style and an end-zone colour per palette', () => {
-  for (const [id, t] of Object.entries(STADIUM_THEMES)) {
-    assert.ok(t.field && ['grass', 'snow', 'sand', 'neon'].includes(t.field.surface), id);
-    assert.ok(Array.isArray(t.field.words) && t.field.words.length >= 1, id);
-    for (const p of t.palettes) assert.match(p.zone, /^#[0-9A-Fa-f]{6}$/, `${id}.zone`);
-  }
+  assert.equal(withAlpha('#FFFFFF', 0.5), 'rgba(255,255,255,0.5)', 'memoised value is stable');
 });
 
 test('fieldProjection: play line keeps world scale, far side recedes, near side comes forward', () => {
@@ -146,22 +135,43 @@ test('fieldProjection: play line keeps world scale, far side recedes, near side 
   assert.ok(pr.xMin < fv.camX && pr.xMax > fv.camX + fv.w / fv.k);
 });
 
-test('drawField runs for every stadium / tier / view against a stub ctx', () => {
-  for (const id of Object.keys(STADIUM_THEMES)) {
+test('drawField (FIELD + ENDLESS layouts) runs for every theme / tier / view against a stub ctx', () => {
+  for (const id of Object.keys(THEMES)) {
     for (let tier = 0; tier < 5; tier++) {
       const pal = themePalette(id, tier);
       for (const fv of [
-        { w: 390, h: 844, k: 1.1, camX: -60, gy: 560, endX: 280, spot: { x: 0, alpha: 1 } },
-        { w: 360, h: 640, k: 0.45, camX: -500, gy: 470, endX: 0, spot: { x: -430, alpha: 0.5 } },
-        { w: 430, h: 932, k: 0.8, camX: 250, gy: 1400, endX: 300 }, // ground below the view
-        { w: 390, h: 844, k: 0.7, camX: 12345, gy: -80, endX: 100 }, // looking far past the end line
-        { w: 96, h: 64, k: 0.32, camX: -222, gy: 45, endX: 0, tilt: 0.22, detail: 0.2 },
+        { w: 390, h: 844, k: 1.1, camX: -60, gy: 560, endX: 280, originX: 0, spot: { x: 0, alpha: 1 } },
+        { w: 360, h: 640, k: 0.45, camX: -500, gy: 470, endX: 0, originX: 0, spot: { x: -430, alpha: 0.5 } },
+        { w: 430, h: 932, k: 0.8, camX: 250, gy: 1400, endX: 300, originX: 0 }, // ground below the view
+        { w: 390, h: 844, k: 0.7, camX: 12345, gy: -80, endX: 100, originX: 0 }, // far past the end line
+        { w: 390, h: 844, k: 0.6, camX: 50000, gy: 600, endX: 100, originX: 0 }, // endless: 6,600+ yards
+        { w: 96, h: 64, k: 0.32, camX: -222, gy: 45, endX: 0, originX: 0, tilt: 0.22, detail: 0.2 },
       ]) {
-        const ctx = stubCtx();
-        const pr = drawField(ctx, id, pal, fv, tier * 1.3);
-        assert.ok(Number.isFinite(pr.farY));
-        if (fv.gy < fv.h && fv.camX < 1000) assert.ok(ctx.__calls.n > 20, `${id} draws the field`);
+        for (const mode of ['field', 'endless']) {
+          const ctx = stubCtx();
+          const pr = drawField(ctx, id, pal, { ...fv, mode }, tier * 1.3);
+          assert.ok(Number.isFinite(pr.farY));
+          if (fv.gy < fv.h && fv.gy > 0 && (mode === 'endless' || fv.camX < 1000)) assert.ok(ctx.__calls.n > 20, `${id} ${mode} draws the field`);
+        }
       }
     }
   }
+});
+
+test('endless field helpers: 5-yard lines anchored at the origin, numbers count up forever', () => {
+  const U = CONFIG.field.yard;
+  const xs = endlessLineXs(-100, 400, 0);
+  assert.ok(xs.length > 5);
+  for (const { x, j } of xs) {
+    assert.ok(Math.abs(x - j * 5 * U) < 1e-9);
+    assert.ok(x >= -100 - 1e-9 && x <= 400 + 1e-9);
+  }
+  assert.ok(xs.some((m) => m.j === 0), 'the start line is included');
+  assert.equal(endlessNumberAt(10 * U, 0), 10);
+  assert.equal(endlessNumberAt(140 * U, 0), 140);
+  assert.equal(endlessNumberAt(1000 * U + 30, 30), 1000);
+  assert.equal(endlessNumberAt(-50, 0), 0);
+  assert.deepEqual(endlessLineXs(10, 5, 0), []);
+  const far = endlessLineXs(50000, 50500, 0);
+  assert.ok(far.length > 0 && far.every((m) => Number.isFinite(m.x)));
 });

@@ -517,3 +517,189 @@ test('a ball dropping into the end-zone stands is caught by the crowd; one clear
   for (let i = 0; i < 60; i++) game.step(STEP);
   assert.ok(b.x > back, 'cleared the stands');
 });
+
+// ---------------------------------------------------------------- v2: FIELD GOAL + ENDLESS modes
+const U = CONFIG.field.yard;
+
+function setupMode(seed, mode) {
+  const s = setup(seed);
+  const extra = [];
+  s.game.on('modeChange', (p) => extra.push(p));
+  s.game.on('net', (p) => extra.push({ net: p }));
+  if (mode) s.game.idle({ mode });
+  return { ...s, extra };
+}
+
+/** Aim, tap at `t` (a function of the shot band), wait for the score / miss. Returns the phase. */
+function kick(game, events, tOf, label) {
+  stepUntil(game, () => game.phase === 'aim', 10);
+  const b = game.world.shot.band;
+  game.world.marker.t = tOf(b);
+  const scores = events.filter((e) => e.n === 'score').length;
+  assert.ok(game.tap(), label + ': tap accepted');
+  stepUntil(game, () => events.filter((e) => e.n === 'score').length > scores || game.phase === 'miss', 8);
+  return game.phase;
+}
+
+test('modes: default FIELD; idle({mode}) switches + emits modeChange only on change; newRun({mode}) too', () => {
+  const { game, extra, events } = setupMode(1);
+  game.idle();
+  assert.equal(game.mode, 'field');
+  assert.equal(game.world.mode, 'field');
+  assert.ok(Number.isFinite(game.world.fieldEnd));
+  game.idle({ mode: 'field' });
+  assert.equal(extra.filter((e) => e.mode).length, 0, 'no modeChange without a change');
+  game.idle({ mode: 'endless' });
+  assert.deepEqual(extra.filter((e) => e.mode), [{ mode: 'endless' }]);
+  assert.equal(game.world.mode, 'endless');
+  assert.equal(game.world.fieldEnd, null);
+  assert.equal(game.world.originX, 0);
+  assert.equal(game.world.ball.x, 0);
+  assert.equal(game.world.oldPost, null);
+  assert.equal(game.phase, 'idle');
+  game.idle({ mode: 'bogus' });
+  assert.equal(game.mode, 'endless', 'unknown modes are ignored');
+  game.newRun({ mode: 'field' });
+  assert.equal(game.mode, 'field');
+  assert.equal(extra.filter((e) => e.mode).length, 2);
+  const rs = events.find((e) => e.n === 'runStart').p;
+  assert.equal(rs.mode, 'field');
+  assert.equal(rs.cut, false);
+  assert.equal(game.hud().mode, 'field');
+  assert.equal(game.hud().yards, 0);
+  assert.ok(game.hud().attemptYards > 0);
+});
+
+test('ENDLESS: chained v1 mechanic - next tee = max(rest, post + 60), old post kept, yards counter', () => {
+  const { game, events, extra } = setupMode(2, 'endless');
+  game.newRun();
+  assert.equal(game.world.mode, 'endless');
+  assert.equal(game.hud().attemptYards, 0);
+  let prevTee = game.world.teeX;
+  assert.equal(prevTee, 0);
+  for (let i = 0; i < 12; i++) {
+    const post = { ...game.world.post };
+    assert.notEqual(kick(game, events, (b) => b.tBest, 'shot ' + i), 'miss');
+    stepUntil(game, () => game.world.teeX !== prevTee && game.phase === 'intro', 6);
+    const w = game.world;
+    assert.ok(w.teeX >= post.x + CONFIG.endless.nextTeeGap - 1e-9, 'tee is past the post it just cleared');
+    assert.ok(w.teeX > prevTee, 'tees strictly advance');
+    assert.ok(w.oldPost && Math.abs(w.oldPost.x - post.x) < 1e-9, 'old post kept on screen');
+    assert.equal(w.fieldEnd, null);
+    assert.equal(game.hud().yards, Math.floor((w.teeX - w.originX) / U + 1e-9));
+    prevTee = w.teeX;
+  }
+  assert.ok(game.hud().yards > 100, 'yards ' + game.hud().yards);
+  assert.equal(extra.filter((e) => e.net).length, 0, 'no kicking net in ENDLESS');
+});
+
+test('ENDLESS: no net / stands - a goal keeps flying past the net line; camera never releases the ball', () => {
+  const { game, events } = setupMode(5, 'endless');
+  game.newRun();
+  stepUntil(game, () => game.phase === 'aim');
+  game.world.marker.t = game.world.shot.band.hi - 1e-3;
+  game.tap();
+  const post = game.world.post;
+  let maxX = -Infinity;
+  for (let i = 0; i < 1200 && game.phase !== 'intro'; i++) {
+    game.step(STEP);
+    maxX = Math.max(maxX, game.world.ball.x);
+    if (game.phase === 'fly' || game.phase === 'settle') assertBallVisible(game, 'endless flight step ' + i);
+  }
+  assert.ok(events.some((e) => e.n === 'score'));
+  assert.ok(maxX > post.x + CONFIG.field.netOffset + CONFIG.physics.ballRadius, 'ball went past the (absent) net line: ' + maxX);
+  assert.equal(game.world.flight.netHit, false);
+});
+
+test('always beatable in BOTH modes: 60 shots at tBest / band edges never miss (8 seeds)', () => {
+  const taps = [(b) => b.tBest, (b) => b.lo + 1e-3, (b) => b.hi - 1e-3];
+  for (const mode of ['field', 'endless']) {
+    for (let seed = 1; seed <= 8; seed++) {
+      const { game, events } = setupMode(seed, mode);
+      game.newRun({ mode });
+      for (let i = 0; i < 60; i++) {
+        const ph = kick(game, events, taps[i % 3], mode + ' seed ' + seed + ' shot ' + i);
+        assert.notEqual(ph, 'miss', mode + ' seed ' + seed + ' shot ' + i + ' missed');
+      }
+      assert.equal(game.hud().made, 60, mode + ' seed ' + seed);
+    }
+  }
+});
+
+test('ENDLESS numeric stability: a shot teed ~50,000 u down the field still scores at tBest', () => {
+  const { game, events } = setupMode(9, 'endless');
+  game.newRun();
+  kick(game, events, (b) => b.tBest, 'first');
+  stepUntil(game, () => game.phase === 'settle', 6);
+  const b = game.world.ball;
+  b.x = b.px = 50000;
+  b.y = b.py = CONFIG.physics.ballRadius;
+  b.vx = b.vy = 0;
+  b.rolling = false;
+  b.resting = true;
+  stepUntil(game, () => game.phase === 'intro', 3);
+  assert.ok(game.world.teeX >= 50000);
+  for (let i = 0; i < 3; i++) {
+    assert.notEqual(kick(game, events, (bb) => bb.tBest, 'far ' + i), 'miss');
+  }
+  assert.ok(game.hud().yards > 6000);
+});
+
+test('ENDLESS continue: same tee, new shot at the same made; yards keep counting', () => {
+  const { game, events } = setupMode(3, 'endless');
+  game.newRun();
+  kick(game, events, (b) => b.tBest, 'goal');
+  stepUntil(game, () => game.phase === 'aim', 8);
+  const tee = game.world.teeX;
+  const yards = game.hud().yards;
+  const made = game.hud().made;
+  const shot = game.world.shot;
+  game.world.marker.t = 0;
+  game.tap();
+  stepUntil(game, () => game.phase === 'over', 8);
+  const go = events.find((e) => e.n === 'gameover').p;
+  assert.equal(go.mode, 'endless');
+  assert.equal(go.yards, yards);
+  assert.ok(game.continueRun());
+  assert.equal(game.world.teeX, tee);
+  assert.notEqual(game.world.shot, shot);
+  assert.equal(game.world.shot.made, made);
+  assert.equal(game.hud().yards, yards);
+  assert.equal(events.find((e) => e.n === 'continue').p.mode, 'endless');
+  assert.notEqual(kick(game, events, (b) => b.tBest, 'after continue'), 'miss');
+});
+
+test('ENDLESS newRun from far down the field: camera cut (runStart.cut), ball back at x = 0', () => {
+  const { game, events } = setupMode(4, 'endless');
+  game.newRun();
+  const first = events.find((e) => e.n === 'runStart').p;
+  assert.equal(first.cut, false, 'from the menu tee: glide, no cut');
+  for (let i = 0; i < 4; i++) kick(game, events, (b) => b.tBest, 'g' + i);
+  stepUntil(game, () => game.phase === 'aim', 8);
+  game.world.marker.t = 0;
+  game.tap();
+  stepUntil(game, () => game.phase === 'over', 8);
+  assert.ok(game.world.ball.x > CONFIG.endless.cutDist);
+  events.length = 0;
+  game.newRun();
+  const rs = events.find((e) => e.n === 'runStart').p;
+  assert.equal(rs.cut, true);
+  assert.equal(rs.mode, 'endless');
+  assert.equal(game.world.teeX, 0);
+  assert.equal(game.world.ball.x, 0);
+  assert.equal(game.world.oldPost, null);
+  assert.equal(game.hud().yards, 0);
+  assert.equal(game.hud().made, 0);
+});
+
+test('FIELD gameover carries mode + yards (0)', () => {
+  const { game, events } = setupMode(6, 'field');
+  game.newRun();
+  stepUntil(game, () => game.phase === 'aim');
+  game.world.marker.t = 0;
+  game.tap();
+  stepUntil(game, () => game.phase === 'over', 8);
+  const go = events.find((e) => e.n === 'gameover').p;
+  assert.equal(go.mode, 'field');
+  assert.equal(go.yards, 0);
+});

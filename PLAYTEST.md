@@ -1,4 +1,4 @@
-# Flick Goal: playtest guide
+# Flick Goal v2: playtest guide
 
 ## Run it locally
 
@@ -29,13 +29,26 @@ npm test                          # = node --test "tests/*.test.mjs"
 
 Tips: turn the phone sound on (the game has synthesized SFX). Vibration works on Android only, because iOS Safari has no vibration API.
 
+## What's new in v2
+
+- **Two modes.** FIELD GOAL (default): every kick is a fresh field-goal attempt on the end line ("32 YD FG"), with the end zone, the kicking net and the stands behind it, and a camera swoop between kicks. ENDLESS: the original chained game. The next tee is where the ball stopped, the field and its yard numbers go on forever, and a "140 YDS" counter shows how far you've got. Both modes use the same difficulty (it depends on goals made).
+- **Switching mode.** Tapping anywhere on the menu still starts a run straight away in the current mode. The white **mode button** under BEST switches FIELD GOAL / ENDLESS without starting a run. It has a red NEW badge until you've played Endless once. Returning players (3+ games) see a one-time bouncing "NEW: Endless mode! Tap to switch" bubble on up to 3 menu visits. Each mode has its own BEST, and Game Over shows which mode you played (plus YDS and a FARTHEST! tag in Endless).
+- **Aim slider tutorial.** Your very first kick shows the full power slider (track, green zone, needle). On your second kick the slider fades out about 1.4 s into the aim ("Now aim with the dots"). From the third kick on only the guide dots show: **bunched = too weak, evenly spaced = right, stretched = too strong**. Progress is saved per player and shared by both modes. Developer start-round runs don't use it up.
+- **Aim Slider upgrade.** Store → UPGRADES → AIM SLIDER, 10,000 coins. Once bought, the slider shows on every kick. Switch it off and on again on the store card (IN USE / USE) or in Settings ("Aim slider", shown only once owned).
+- **RETRO and PRO stadiums.** Store → STADIUMS has two sections: RETRO (the flat look; Day Game is free) and PRO GRAPHICS (HD). Prices: Day 400, Night 1,200, Snow 1,500, Sunset 1,800, Arcade 2,400. The ball is drawn in the equipped stadium's style. **In this build PRO stadiums still draw with the retro art** and their store previews carry a "PRO ART PENDING" tag: the pro art is the next step (see "Pro graphics" below). Buying, equipping and playing them already works end to end.
+- **New save.** v2 saves under `flickgoal.save2`. On the first launch it copies coins, owned items, the equipped ball and stadium, your best (into both modes), settings and No Ads from the old save once. The old save is never changed, so older builds on the same address keep their own progress.
+
 ## URL flags
 
 | Flag | Effect |
 |---|---|
-| `?debug=1` | Debug overlay (goal window, nominal arc, band / speed / clock numbers), difficulty-schedule self-check in the console, `window.__fg` handle, and the settings footer shows the ads mode |
-| `?qa` | `window.__fg` handle for console poking (`__fg.shop.addCoins(5000)`, `__fg.game`, `__fg.save.data`), plus the ads-mode footer. No overlay |
-| `?smoke` | Same as `?qa` (used by the automated smoke test) |
+| `?debug=1` | Debug overlay (goal window, nominal arc, band / speed / clock numbers, mode, style, aim mode, graphics tier), difficulty-schedule self-check in the console, `window.__fg` handle, and the settings footer shows the ads mode |
+| `?qa` | `window.__fg` handle for console poking (`__fg.shop.addCoins(5000)`, `__fg.game`, `__fg.save.data`, `__fg.aim`, `__fg.debugState()`), plus the ads-mode footer. No overlay |
+| `?smoke` | Same as `?qa` (used by the automated browser tests) |
+| `?mode=field` / `?mode=endless` | Sets (and saves) the game mode at boot |
+| `?slider=on` / `off` / `default` | Developer slider force for every kick (turns developer mode on). `default` = tutorial + upgrade rules |
+| `?style=retro` / `?style=pro` | QA only: draws the equipped stadium's theme in that art style without owning it (not saved) |
+| `?gfx=high` / `?gfx=low` | Forces the graphics tier of PRO stadiums (otherwise adaptive). Retro always runs at full quality |
 | `?round=N` | Developer start round (1 to 200): runs begin at kick N, as if N-1 goals were made. Also turns developer mode on. See below |
 | `?dev=1` | Developer mode on (Settings shows the DEVELOPER section); `?dev=0` turns it off |
 | `?ads=off` | Runs as if `monetization.mode = 'off'`: every ad and IAP button is hidden, so you can check that the game is complete without them |
@@ -43,37 +56,42 @@ Tips: turn the phone sound on (the game has synthesized SFX). Vibration works on
 Handy console snippets (with `?qa`):
 
 ```js
-__fg.shop.addCoins(5000, 'gift')          // test the store
+__fg.shop.addCoins(10000, 'dev')           // test the store / Aim Slider
 __fg.save.update(d => { d.lastGiftAt = 0 }) // make the free gift ready again
-__fg.save.reset(); location.reload()       // fresh player (keeps No Ads + settings)
-localStorage.clear(); location.reload()    // truly fresh
+__fg.save.update(d => { d.tutorial.kicks = 0 }) // replay the slider tutorial
+__fg.save.reset(); location.reload()       // fresh progress (keeps No Ads, settings, tutorial, mode)
+localStorage.removeItem('flickgoal.save2'); location.reload() // re-run the one-time v1 import
+localStorage.clear(); location.reload()    // truly fresh player
 ```
 
-## Developer option: start at a later round
+## Developer options
 
-To playtest higher levels without playing up to them, you can pick the round a run starts on. Round R is the R-th kick of a run. Starting at round R plays exactly like a normal run that has already made R-1 goals: same needle speed, band width, shot clock, kick distance, post heights and PERFECT window. The score starts at R-1, the streak and run coins start at 0, and Continue is still available.
+**On the phone:** open Settings and tap the logo / version block at the bottom **5 times** quickly. A "Developer mode ON" toast appears, and a **DEVELOPER** section shows up in Settings. Tap it 5 times again to turn developer mode off.
 
-The background colour follows the score, not the round, so a dev start shows the colour for a score of R-1. That is the colour you would see if every goal so far had scored 1 point. A real run with PERFECT kicks (up to 4 points each) may already be on a later colour at the same round.
+The DEVELOPER card has:
 
-**On the phone:** open Settings and tap the version label (`v1.0.0`) at the bottom **5 times** quickly. A "Developer mode ON" toast appears, and a **DEVELOPER** section shows up in Settings. Set **Start round** with the -/+ buttons or the quick chips (1, 5, 10, 20, 30, 50, 75, 100), then go back and play. Tap the version 5 times again to turn developer mode off.
+- **Start round** (-/+ and quick chips 1 … 100). Round R plays exactly like a normal run that already made R-1 goals (needle speed, window size, shot clock, distance, post heights, PERFECT window). Works in both modes. Score starts at R-1, streak and run coins at 0; Continue is available. Dev runs **never change BEST** (either mode) and never use up the slider tutorial; Game Over shows "DEV RUN · started R30". A **DEV · R30** badge shows on the menu and in the HUD.
+- **MODE**: FIELD GOAL / ENDLESS, same as the menu button (never starts a run).
+- **AIM SLIDER**: DEFAULT (tutorial + upgrade rules) / ON (slider every kick) / OFF (dots only). Takes effect from the next kick.
+- **GRAPHICS (PRO STADIUMS)**: AUTO / HIGH / LOW quality tier for PRO stadiums.
+- **+10,000 coins** and **Reset tutorial** (the next kick shows the full slider again, and the NEW badge / Endless bubble come back).
+- A read-out line: "Tutorial kicks: 1 · next kick: FADE (tutorial)".
 
-**By URL:** `?round=30` sets the start round to 30 and turns developer mode on. `?dev=1` turns developer mode on without changing the round, and `?dev=0` turns it off. They combine with the other flags, for example `?round=50&debug=1`.
-
-- The setting is saved in its own localStorage key (`flickgoal.dev`), separate from the game save. It stays set across reloads, and every build served from the same address shares it.
-- While the start round is above 1, a small **DEV · R30** badge shows on the menu (top-left) and in the HUD (under the pause button).
-- Dev runs **never change your Best score** and never show NEW BEST. Game Over shows a small "DEV RUN · started R30" tag instead. Coins are earned normally.
-- The background colour follows the score, so a dev run starts on the colour for score R-1. A strong natural run usually has a higher score at the same kick (PERFECT shots and streaks add bonus points), so it may show a later colour. Everything that sets the difficulty matches.
-- Range 1 to 200. Round 1 is the normal game. While developer mode is off, every run starts at round 1 (the chosen round is remembered for when you turn it back on).
-- For release, set `dev.enabled: false` in `src/config.js`. That removes every way in: the URL flags, the version-tap unlock and the section.
-- **On this branch (`try/no-slider`)** there is no needle or band to see: round R gives this branch's slower aim sweep (`difficulty.speed` 0.40 to 0.95) and the same scoring window, so the guide dots behave exactly as they would after R-1 goals. A good test is `?round=16` or higher, where reading the dots gets hard. The first-shot dots hint only appears on runs that start at round 1.
+These settings live in their own localStorage key (`flickgoal.dev`), separate from the game save, and stay set across reloads. The background colour follows the score, so a dev start at round R shows the colour for score R-1. For release, set `dev.enabled: false` in `src/config.js`: that removes every way in (URL flags, the tap unlock and the section).
 
 ## What to look for
 
-- **Core feel (branch `try/no-slider`).** There is no aim slider: the only aim cue is the short row of guide dots coming out of the ball. They sweep up and down, showing the launch angle (direction) and the kick strength (dot spacing). The tell is the spacing: **bunched = too weak, evenly spaced = right, stretched = too strong**. The spacing changes fastest right around the ideal kick, so you see the row "open up" as the sweep passes through the scoring window, even late in a run. The first-shot hint says this in the game. Does it feel fair and learnable? **Play past score 15 especially**: the window gets narrower there, and that is where reading the dots is hardest. The aim sweep is slower than on the slider version (`difficulty.speed` 0.40 rising to 0.95, base was 0.50 to 1.10). Taps just outside the ideal window can still go in off the post ("DOINK!"). This is on purpose.
-- **Slider back on.** Set `rail.visible: true` in `src/config.js` to draw the old rail (track, green band, needle) again for comparison. The first-shot hint switches back to the old copy automatically (the slower `difficulty.speed` stays; set it back to `{ start: 0.50, asym: 1.10 }` for the exact base feel).
-- **Difficulty.** Is it too easy or too hard around score 10, 30 and 60? See `difficulty` below.
-- **Economy.** Are coins earned too fast or too slow for the store prices?
-- **Flow.** Menu, play, game over, continue, store, back. Nothing should ever get stuck, and no browser pop-ups should appear.
+- **Slider tutorial.** Clear `localStorage`, then play: kick 1 has the slider and "TAP when the marker is in the GREEN"; kick 2's slider is readable for a moment then fades while the dots stay; kick 3 has only the dots and the "evenly spaced" hint. Does the handover from slider to dots feel natural? Is 1.4 s the right fade (`aim.fadeDelay` + `aim.fadeTime`)?
+- **Dots only.** Play past score 15 in either mode, where the window gets narrow. Does reading the dots stay fair?
+- **Mode button.** It should read as a button, switch with a bounce, and never start a run. Tapping anywhere else on the menu should start a run immediately.
+- **Endless.** The field numbers keep counting up (10, 20 … 140 …), posts stand on the grass on a painted team-colour circle, the old post stays behind as you move on, and there's no end zone or net. After a game over far down the field, Play Again cuts back to the START line with a quick colour wipe.
+- **Field Goal.** Fresh attempts, "32 YD FG" label, banner + camera swoop between kicks, the net catching the ball.
+- **Economy.** Are coins earned fast enough for Pro Day (400) early on, and does 10,000 for the Aim Slider feel like a fair long-term goal?
+- **Flow.** Menu, play, game over, continue, store, back, in both modes. Nothing should ever get stuck, and no browser pop-ups should appear.
+
+## Pro graphics
+
+(Engineer B fills this in when the PRO style lands: what the PRO stadiums look like in FIELD and ENDLESS, and how the adaptive quality tier behaves.)
 
 ## Monetization: where the real SDKs plug in (after approval)
 
@@ -97,25 +115,33 @@ All numbers live in one file. Edit it, then reload.
 
 | Area | Key | What it does |
 |---|---|---|
-| Difficulty | `difficulty.speed` `{start, asym, scale}` | Aim sweep speed in rail-lengths per second: starts at `start`, approaches `asym`; `scale` is roughly how many goals it takes to get most of the way there |
-| | `difficulty.band` | Width of the scoring window as a fraction of the (invisible) rail (W). Smaller is harder. Keep `band/speed >= dwellMin` |
+| Modes | `modes.default` | Mode for new players (`'field'`) |
+| | `modes.calloutMinGames`, `calloutMaxShows` | Who sees the one-time "NEW: Endless mode!" bubble (3+ games) and on how many menu visits (3) |
+| Endless | `endless.nextTeeGap` | Next tee at least this far past the post just cleared |
+| | `endless.settleMax`, `cutDist`, `continueCutDist` | Pause after a goal; when a new run / continue cuts the camera instead of gliding |
+| | `endless.discRadius` | Size of the painted circle under Endless posts |
+| Aim slider | `aim.fadeDelay`, `aim.fadeTime` | Kick 2: slider fully visible for `fadeDelay` s, then fades over `fadeTime` s |
+| | `aim.tutorialKicks`, `aim.dotsHintUntilKick` | Tutorial length (2 kicks); the dots hint shows on a run's first shot until this many kicks |
+| Store | `catalog.balls[]`, `catalog.stadiums[]` (`price`, `style`, `theme`) | Skin prices. Stadiums: RETRO ids `day`…`arcade`, PRO ids `pro_day`…`pro_arcade` |
+| | `catalog.upgrades[]` | Aim Slider price (10,000) |
+| Difficulty | `difficulty.speed` `{start, asym, scale}` | Aim sweep speed in rail-lengths per second (same for everyone, slider or not) |
+| | `difficulty.band` | Width of the scoring window as a fraction of the rail. Keep `band/speed >= dwellMin` |
 | | `difficulty.clock` | Shot clock in seconds |
 | | `difficulty.distance`, `gap`, `barHeight` | Kick distance, goal window height, crossbar height ramp |
-| | `difficulty.bandAlpha` | How visible the green fill stays (0.95 fading to 0.45); only used when `rail.visible` is true |
-| | `difficulty.dwellMin`, `reaction` | "Always beatable" guarantees (MATH.md). `npm test` fails if a change breaks them |
+| | `difficulty.bandAlpha` | How visible the slider's green fill stays (0.95 fading to 0.45) |
+| | `difficulty.dwellMin`, `reaction` | "Always beatable" guarantees (MATH.md). `npm test` fails if a change breaks them, in both modes |
 | Scoring | `scoring.perfectFrac`, `perfectMaxPoints`, `tierEvery` | PERFECT window size, streak points cap, background colour change every N points |
 | Coins | `economy.coinsPerGoal`, `coinsPerPerfectBonus`, `pickups.chance`, `pickups.value` | Coin earn rate |
 | | `economy.gift` `{cooldownMs, min, max, step}` | Free gift (every 4 h, 25-50 coins) |
 | | `economy.rewardedCoins`, `rewardedCoinsCooldownMs` | "Watch ad for coins" amount and cooldown |
 | | `economy.continuesPerRun` | Continues per run (via rewarded ad) |
-| Store | `catalog.balls[]`, `catalog.stadiums[]` (`price`) | Skin prices (ids must match `src/engine/skins.js`) |
 | IAP | `products[]` (`priceString`, `grants`) | Placeholder prices and what each pack grants |
 | Ads | `monetization.mode` (`'mock'` or `'off'`), `interstitialEvery`, `minGamesBeforeInterstitial` | Ad frequency |
-| Feel | `physics.gravity`, `restitutionPost`, `timing.introTime`, `timing.missDelay` | Arc weight, post bounciness, pacing |
+| Feel | `physics.gravity`, `restitutionPost`, `timing.introTime`, `timing.missDelay`, `timing.swoopTime` | Arc weight, post bounciness, pacing, Field Goal camera swoop |
+| Field | `field.yard`, `field.netOffset`, `field.standsOffset`… | Field Goal field scale, kicking net and end-zone stands |
 | Look | `view.zoomMax`, `view.slackBelow`, `view.hudReserve` | Camera framing (how big and how centred the action is) |
-| | `rail.visible` | `false` (this branch): no slider, guide dots only. `true`: the old aim rail |
 | | `rail.guideDots`, `guideStart`, `guideSpacing`, `guideRadius`, `guideOutline` | Guide dot count, distance from the ball, spacing at the ideal power, size and dark rim |
-| | `rail.guideSpread`, `guideSoft` | How much the dot spacing stretches/bunches (±30%) and how quickly it changes around the ideal kick. Smaller `guideSoft` = easier to read. `npm test` checks every scoring window moves the dots by a visible amount |
-| | `rail.lengthFrac`, `rail.thickness`, `rail.markerWidth` | Aim rail size and needle width (when `rail.visible`) |
+| | `rail.guideSpread`, `guideSoft` | How much the dot spacing stretches/bunches and how quickly it changes around the ideal kick |
+| | `rail.lengthFrac`, `rail.thickness`, `rail.markerWidth` | Slider size and needle width |
+| Graphics | `gfx.defaultQuality` | PRO stadiums' quality tier (`'auto'`) |
 | Haptics | `haptics.*` | Vibration patterns (ms) |
-| Dev | `dev.enabled`, `dev.maxRound` | Developer start-round option (see above). Set `enabled: false` for release |

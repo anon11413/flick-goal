@@ -5,16 +5,22 @@
 // never reads wall-clock time. All flight physics uses physics.stepFlight at the
 // same dt the solver used, so a tap inside the measured band always scores.
 //
-// Field model (SPEC §8.1): the goal post always stands on the END LINE at world
-// x = world.fieldEnd. Every shot is a fresh field-goal attempt: the solver's shot
-// is translated (physics is translation-invariant) so its post lands on the end
-// line and the ball is teed up d world units in front of it. Moving to a new
-// attempt is a short camera swoop (timing.swoopTime) during `intro`.
+// Two modes (V2_SPEC §4), same solver, same difficulty (keyed on goals made):
+//  * FIELD GOAL ('field', default; SPEC §8.1): the goal post always stands on the END LINE at
+//    world x = world.fieldEnd. Every shot is a fresh field-goal attempt: the solver's shot is
+//    translated (physics is translation-invariant) so its post lands on the end line and the
+//    ball is teed up d world units in front of it. Moving to a new attempt is a short camera
+//    swoop (timing.swoopTime) during `intro`. A kicking net + end-zone stands catch the ball.
+//  * ENDLESS ('endless'): the chained v1 mechanic. The next tee is where the ball came to rest
+//    (never behind the post it just cleared), the old post stays behind, the field runs forever.
+//    No net, no stands. hud().yards = ground gained this run.
 
 import { CONFIG } from '../config.js';
 import { solveShot, mapRail, launchVelocity, stepFlight, postColliders, postReach, yardsOf } from './physics.js';
 
 export const PHASES = ['idle', 'intro', 'aim', 'fly', 'settle', 'miss', 'over'];
+export const MODES = ['field', 'endless'];
+const isMode = (m) => m === 'field' || m === 'endless';
 
 /** Resting orientation of the ball on the tee (world radians, CCW, y-up). */
 export const TEE_ROT = 1.15;
@@ -55,7 +61,9 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   const R = P.ballRadius;
   const reach = postReach(cfg);
   const FLD = cfg.field;
+  const EN = { nextTeeGap: 60, settleMax: 0.8, cutDist: 300, continueCutDist: 400, ...(cfg.endless || {}) };
   const listeners = new Map();
+  let mode = isMode(cfg.modes && cfg.modes.default) ? cfg.modes.default : 'field';
 
   // ---- viewport ----
   let cssW = 390;
@@ -86,12 +94,14 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   // Engine-internal world; render.js and engine tests read it (shell must not).
   const world = {
     phase: 'idle',
+    mode,             // 'field' | 'endless' (see top of file)
     shot: null,
-    post: null,       // {x, bar, top} current post (colliders cached in _cols); x === fieldEnd
-    oldPost: null,    // unused since posts stay on the end line (kept for the world contract)
+    post: null,       // {x, bar, top} current post (colliders cached in _cols); FIELD: x === fieldEnd
+    oldPost: null,    // ENDLESS: the previous post, drawn while it scrolls away (not collidable); FIELD: null
     teeX: 0,
-    fieldEnd: null,   // world x of the end line (goal post); fixed for the whole session
-    yards: 0,         // current attempt length in whole yards (tee -> end line)
+    originX: 0,       // ENDLESS: x of the run's first tee (yard 0 of the endless field)
+    fieldEnd: null,   // FIELD: world x of the end line (goal post); ENDLESS: null
+    yards: 0,         // FIELD: current attempt length in whole yards (tee -> end line); ENDLESS: 0
     swoop: null,      // {t, dur, from: {cx, cy, zoom}} camera swoop to a fresh attempt (during intro)
     oldBall: null,    // {x, y, rot} the previous ball, fading out while the camera swoops away
     freshBall: false, // the ball on the tee was teed up fresh (no glide) this intro
@@ -199,6 +209,10 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
    */
   function postGoalBox() {
     const b = world.ball;
+    if (mode === 'endless') {
+      // v1: follow the ball (no net framing on the endless field)
+      return { minX: b.x - 200, maxX: b.x + 200, minY: -V.groundPad, maxY: Math.max(b.y + 120, 380) };
+    }
     const px = world.post ? world.post.x : b.x;
     return {
       minX: Math.min(b.x - 160, px - 190),
@@ -210,6 +224,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
 
   /** World x past which a ball has flown clean out of the stadium (camera stops chasing it). */
   function stadiumBackX() {
+    if (mode === 'endless') return Infinity; // no stands: the camera always keeps the ball in view
     return world.post ? world.post.x + FLD.standsOffset + FLD.standsDepth : Infinity;
   }
 
@@ -381,7 +396,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   function installShot(shot) {
     world.shot = shot;
     world.teeX = shot.teeX;
-    world.yards = yardsOf(shot.d, cfg);
+    world.yards = mode === 'field' ? yardsOf(shot.d, cfg) : 0;
     const post = { x: shot.postX, bar: shot.bar, top: shot.top };
     post._cols = postColliders(post, cfg);
     world.post = post;
@@ -399,19 +414,9 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   function beginShot() {
     const shot = solvePlaced();
     installShot(shot);
-    pickMarkerStart(shot);
-    resetFlight();
-    clockMax = shot.clock;
-    clock = clockMax;
-    clockLowSent = false;
-    missReason = null;
-    settleT = 0;
-    missT = 0;
+    startIntro(shot);
     const b = world.ball;
     const far = Math.hypot(b.x - shot.teeX, b.y - R) > SWOOP_DIST;
-    world.oldBall = null;
-    world.swoop = null;
-    world.freshBall = false;
     if (far) {
       const c = world.cam;
       world.oldBall = { x: b.x, y: b.y, rot: b.rot };
@@ -430,6 +435,48 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     setPhase('intro');
   }
 
+  /** Per-shot state shared by both modes (marker, flight, clock, timers, swoop). */
+  function startIntro(shot) {
+    pickMarkerStart(shot);
+    resetFlight();
+    clockMax = shot.clock;
+    clock = clockMax;
+    clockLowSent = false;
+    missReason = null;
+    settleT = 0;
+    landT = 0;
+    missT = 0;
+    world.swoop = null;
+    world.oldBall = null;
+    world.freshBall = false;
+  }
+
+  /**
+   * ENDLESS (v1): solve a shot teed at `teeX` and enter `intro`; the ball glides from where it
+   * is onto the tee. keepOldPost keeps the post just cleared on screen (not collidable).
+   */
+  function beginShotEndless(teeX, { keepOldPost = false } = {}) {
+    const prev = world.post;
+    const shot = solveShot({ teeX, made, rng }, cfg);
+    installShot(shot);
+    world.oldPost = keepOldPost && prev ? { x: prev.x, bar: prev.bar, top: prev.top } : null;
+    startIntro(shot);
+    const b = world.ball;
+    b.vx = 0;
+    b.vy = 0;
+    b.rolling = false;
+    b.resting = true;
+    glide = { x: b.x, y: b.y, rot: nearestAngle(b.rot, TEE_ROT) };
+    b.rot = b.prot = glide.rot;
+    setPhase('intro');
+  }
+
+  /** ENDLESS: ground gained this run, in whole yards (0 in FIELD). */
+  function endlessYards() {
+    if (mode !== 'endless') return 0;
+    const u = FLD && FLD.yard > 0 ? FLD.yard : 1;
+    return Math.max(0, Math.floor((world.teeX - world.originX) / u + 1e-9));
+  }
   function nearestAngle(from, target) {
     // Returns an angle equal to `target` (mod 2π) closest to `from` — used so the
     // ball never visibly spins several turns while easing back onto the tee.
@@ -580,7 +627,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       b.x += b.vx * dt;
       b.y = R;
       rollIntoStem(prevX);
-      backstop(prevX);
+      if (mode === 'field') backstop(prevX);
       spinBall(dt);
       return;
     }
@@ -588,7 +635,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     if (r.collisions.length) {
       for (const c of r.collisions) emit('bounce', { kind: c.kind, impact: c.impact });
     }
-    backstop(prevX);
+    if (mode === 'field') backstop(prevX);
     if (b.resting) return;
     const impact = groundContact();
     if (impact > 0) {
@@ -781,12 +828,26 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   function stepSettle(dt) {
     settleT += dt;
     freeStep(dt);
+    if (mode === 'endless') {
+      // v1: next shot once the ball rests, or after the settle cap
+      if (world.ball.resting || settleT >= EN.settleMax) nextShot();
+      return;
+    }
     if (world.flight.landed) landT += dt;
     // swoop to the next attempt shortly after the first landing (hard cap SETTLE_CAP)
     if (world.ball.resting || landT >= TM.settleMax || settleT >= SETTLE_CAP) nextShot();
   }
 
   function nextShot() {
+    if (mode === 'endless') {
+      // The next tee is where the ball came to rest, but never behind the post it just went
+      // through (a doink can bounce back), so the old post always stays behind.
+      const b = world.ball;
+      const post = world.post;
+      const minTee = post ? post.x + EN.nextTeeGap : b.x;
+      beginShotEndless(Math.max(b.x, minTee), { keepOldPost: true });
+      return;
+    }
     // A fresh field-goal attempt from a new (generally longer) distance.
     beginShot();
   }
@@ -800,7 +861,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       emit('gameover', {
         score, made, perfects, bestStreak, coinsRun, reason: missReason,
         canContinue: continuesUsed < cfg.economy.continuesPerRun,
-        startMade,
+        startMade, mode, yards: endlessYards(),
       });
     }
   }
@@ -821,12 +882,26 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     }
   }
 
-  function idle() {
+  /** Switch the mode for the next scene; returns true when it changed. */
+  function setMode(m) {
+    if (!isMode(m) || m === mode) return false;
+    mode = m;
+    world.mode = m;
+    return true;
+  }
+
+  /**
+   * Attract scene for the current (or given) mode: tee at x = 0 and one solved post.
+   * FIELD: the post defines the end line. ENDLESS: yard 0 of the endless field is x = 0.
+   * Emits 'modeChange' {mode} when opts.mode switched the mode.
+   */
+  function idle({ mode: m } = {}) {
+    const changed = setMode(m);
     resetRunStats();
     lastBox = null;
-    // Attract scene: tee at x = 0, the post on the end line d in front of it.
     const shot = solveShot({ teeX: 0, made: 0, rng }, cfg);
-    world.fieldEnd = shot.postX;
+    world.originX = 0;
+    world.fieldEnd = mode === 'field' ? shot.postX : null;
     installShot(shot);
     world.pickup = null;
     world.swoop = null;
@@ -841,10 +916,16 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     clockLowSent = false;
     setPhase('idle');
     snapCamera();
+    if (changed) emit('modeChange', { mode });
   }
 
-  /** Start a run. opts.startMade (dev "start round" - 1) pre-counts goals; omitted = normal run. */
-  function newRun({ startMade: sm = 0 } = {}) {
+  /**
+   * Start a run in the current mode (or opts.mode, which switches first through the same scene
+   * reset as idle()). opts.startMade (dev "start round" - 1) pre-counts goals; omitted = normal run.
+   */
+  function newRun({ startMade: sm = 0, mode: m } = {}) {
+    if (isMode(m) && m !== mode) idle({ mode: m });
+    if (mode === 'endless') { newRunEndless(sm); return; }
     const first = !world.shot;
     resetRunStats();
     applyStartMade(sm);
@@ -858,8 +939,30 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       world.oldBall = null;
       snapCamera();
     }
-    emit('runStart', { startMade });
+    emit('runStart', { startMade, mode, cut: false });
     if (world.tier) emit('tier', { tier: world.tier }); // started past a tier: shell recolours too
+  }
+
+  /**
+   * ENDLESS run: the first tee is x = 0 (yard 0). A ball on the menu tee glides onto it; a ball
+   * far down the field (after a game over) is teleported and the camera cut (runStart.cut).
+   */
+  function newRunEndless(sm) {
+    const first = !world.shot;
+    const b = world.ball;
+    const far = first || Math.hypot(b.x, b.y - R) > EN.cutDist;
+    resetRunStats();
+    applyStartMade(sm);
+    lastBox = null;
+    world.originX = 0;
+    world.fieldEnd = null;
+    world.post = null;
+    if (far) placeBallOnTee(0);
+    beginShotEndless(0);
+    world.oldPost = null;
+    if (far) snapCamera();
+    emit('runStart', { startMade, mode, cut: far && !first });
+    if (world.tier) emit('tier', { tier: world.tier });
   }
 
   function tap() {
@@ -892,9 +995,20 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     streak = 0;
     syncStats();
     lastBox = null;
+    if (mode === 'endless') {
+      // v1: same tee, a new shot at the same difficulty (made unchanged); yards keep counting
+      const teeX = world.shot ? world.shot.teeX : world.originX;
+      const b = world.ball;
+      const far = Math.hypot(b.x - teeX, b.y - R) > EN.continueCutDist;
+      if (far) placeBallOnTee(teeX);
+      beginShotEndless(teeX);
+      if (far) snapCamera();
+      emit('continue', { mode });
+      return true;
+    }
     // Fresh attempt at the same difficulty (made unchanged), same end line.
     beginShot();
-    emit('continue', {});
+    emit('continue', { mode });
     return true;
   }
 
@@ -941,6 +1055,9 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       clock01: clamp(c / cm, 0, 1),
       canContinue: phase === 'over' && continuesUsed < cfg.economy.continuesPerRun,
       startMade,
+      mode,
+      yards: endlessYards(),
+      attemptYards: mode === 'field' ? world.yards : 0,
     };
   }
 
@@ -956,6 +1073,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     hud,
     worldToScreen,
     get phase() { return phase; },
+    get mode() { return mode; },
     get startMade() { return startMade; },
     get world() { return world; },
     get viewport() { return { cssW, cssH, k0 }; },

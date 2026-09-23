@@ -9,12 +9,19 @@
 // cfg.dev.enabled is false):
 //   ?round=N   set the start round (1..maxRound) and turn developer mode on
 //   ?dev=1     turn developer mode on (?dev=0 turns it off)
+//   ?slider=on|off|default   force the aim slider for every kick (and turn developer mode on)
 //   Settings -> tap the version label 5x   toggle developer mode (see ui/devPanel.js)
+// v2 adds two persisted developer overrides (both inert while developer mode is off):
+//   slider  'default' | 'on' | 'off'   aim slider force (beats the tutorial and the upgrade)
+//   gfx     'auto' | 'high' | 'low'    graphics quality override for adaptive (pro) styles
 
 import { CONFIG } from './config.js';
 
 export const DEV_KEY = 'flickgoal.dev';
 const FALLBACK = { enabled: false, maxRound: 200 };
+export const SLIDER_FORCES = ['default', 'on', 'off'];
+export const GFX_MODES = ['auto', 'high', 'low'];
+const pick = (v, list, dflt) => (list.includes(v) ? v : dflt);
 
 /** cfg.dev with safe defaults (a config without a `dev` block means no dev access). */
 export function devConfig(cfg = CONFIG) {
@@ -51,7 +58,7 @@ function defaultStorage() {
 export function createDevState({ cfg = CONFIG, search = '', storage = defaultStorage() } = {}) {
   const dc = devConfig(cfg);
   const listeners = new Set();
-  const state = { devEnabled: false, startRound: 1 };
+  const state = { devEnabled: false, startRound: 1, slider: 'default', gfx: 'auto' };
 
   function load() {
     try {
@@ -60,6 +67,8 @@ export function createDevState({ cfg = CONFIG, search = '', storage = defaultSto
       if (o && typeof o === 'object') {
         state.devEnabled = o.devEnabled === true;
         state.startRound = clampRound(o.startRound, cfg);
+        state.slider = pick(o.slider, SLIDER_FORCES, 'default');
+        state.gfx = pick(o.gfx, GFX_MODES, 'auto');
       }
     } catch { /* unreadable or blocked storage: defaults */ }
   }
@@ -78,6 +87,11 @@ export function createDevState({ cfg = CONFIG, search = '', storage = defaultSto
     if (p) {
       let touched = false;
       if (p.has('round')) { state.devEnabled = true; state.startRound = clampRound(p.get('round'), cfg); touched = true; }
+      if (p.has('slider') && SLIDER_FORCES.includes(p.get('slider'))) {
+        state.slider = p.get('slider');
+        if (state.slider !== 'default') state.devEnabled = true;
+        touched = true;
+      }
       if (p.get('dev') === '1') { state.devEnabled = true; touched = true; }
       else if (p.get('dev') === '0') { state.devEnabled = false; touched = true; }
       if (touched) persist();
@@ -109,6 +123,26 @@ export function createDevState({ cfg = CONFIG, search = '', storage = defaultSto
       const r = clampRound(n, cfg);
       if (r === state.startRound) return;
       state.startRound = r;
+      changed();
+    },
+    /** Aim slider force in effect: the stored force while developer mode is on, else 'default'. */
+    sliderForce: () => (enabled() ? state.slider : 'default'),
+    storedSlider: () => state.slider,
+    setSliderForce(v) {
+      if (!dc.enabled) return;
+      const s = pick(v, SLIDER_FORCES, 'default');
+      if (s === state.slider) return;
+      state.slider = s;
+      changed();
+    },
+    /** Graphics quality override in effect ('auto' while developer mode is off). */
+    gfx: () => (enabled() ? state.gfx : 'auto'),
+    storedGfx: () => state.gfx,
+    setGfx(v) {
+      if (!dc.enabled) return;
+      const g = pick(v, GFX_MODES, 'auto');
+      if (g === state.gfx) return;
+      state.gfx = g;
       changed();
     },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },

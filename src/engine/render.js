@@ -1,21 +1,36 @@
-// Flick Goal — canvas renderer (world, posts, ball, rail, juice).
+// Flick Goal — canvas renderer CORE (V2_SPEC.md §5).
 //
-// Draws game.world with interpolation (alpha) between fixed sim steps. All
-// cosmetic effects (particles, shake, flash, squash, trail) are driven by game
-// events and advanced with the real frame delta, so they freeze while paused.
-// Touches nothing in the DOM except the canvas it was given.
+// Two independent axes build every scene:
+//  * layout = the game mode (world.mode): 'field' (end zone, net, stands, fresh attempts) or
+//    'endless' (turf and yard lines forever, chained posts);
+//  * style  = the equipped stadium's art style: 'retro' (flat) or 'pro' (stylized realism),
+//    a module in engine/styles/ implementing the style interface (§5.3).
+// The core owns everything style-agnostic: canvas + dpr, camera interpolation, the per-frame
+// frame object `f`, event juice state (particles, rings, glows, shake, flash, squash, trail,
+// net ripple, post tween), palette crossfade on tier change, the aim cues (slider + guide dots,
+// aimDraw.js) with the slider tutorial / upgrade latch, FIELD overlays (tee label, attempt banner,
+// swoop streaks, ghost ball), the mode wipe, flash, debug, and — for adaptive styles — the layer
+// cache (layers.js) and the adaptive quality monitor (quality.js).
+//
+// Draws game.world with interpolation (alpha) between fixed sim steps. Cosmetic effects are
+// driven by game events and advanced with the real frame delta, so they freeze while paused.
+// Touches nothing in the DOM except the canvas it was given (plus detached offscreen canvases
+// for adaptive styles' layer caches).
 
 import { CONFIG } from '../config.js';
-import {
-  BALL_SKINS, STADIUM_THEMES, drawBall, themePalette, mixPalette, mixColor, withAlpha, roundRectPath,
-  drawField, fieldProjection,
-} from './skins.js';
+import { withAlpha, mixPalette, roundRectPath } from './paint.js';
+import { fieldProjection, TEE_H } from './field.js';
+import { ballMeta, basePalette, palKeyOf, THEMES } from './themes.js';
+import { stadiumInfo } from './stadiums.js';
+import { getStyle } from './styles/index.js';
+import { createLayers, defaultMakeCanvas } from './layers.js';
+import { createQualityMonitor } from './quality.js';
+import { railGeometry, drawRailTrack, drawGuideDots } from './aimDraw.js';
+import { railFade } from '../aimAssist.js';
 import { checkSchedule, dwell } from './difficulty.js';
-import { guideLayout } from './guide.js';
 import { TEE_ROT } from './game.js';
 
 const TAU = Math.PI * 2;
-const DEG = Math.PI / 180;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, u) => a + (b - a) * u;
 const easeOutBack = (u) => {
@@ -25,37 +40,61 @@ const easeOutBack = (u) => {
 };
 const easeInOut = (u) => (u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2);
 const easeOutCubic = (u) => 1 - Math.pow(1 - u, 3);
+const nowMs = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
 const UI_FONT = '"Arial Rounded MT Bold","SF Pro Rounded",ui-rounded,"Nunito","Segoe UI",system-ui,sans-serif';
-const POST_TWEEN = 0.4; // s: the post telescopes to the new attempt's bar / upright heights
-
+const POST_TWEEN = 0.4; // s: FIELD post telescopes to the new attempt's bar / upright heights
+const WIPE_TIME = 0.35; // s: mode wipe (modeChange / endless camera cut)
 const CONFETTI = ['#FFD21F', '#FF5A5F', '#39D98A', '#4FC3F7', '#FFFFFF', '#B388FF', '#FF8A3D', '#FF7BC8'];
-const BAND = '#6BFFB0';
-const TEE_H = 9; // world units
 const MAX_PARTICLES = 420;
+const AIM_MODES = new Set(['full', 'fade', 'off']);
 
-export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {}) {
+/**
+ * createRenderer(canvas, game, { cfg, debug, createCanvas })
+ * createCanvas(w, h): optional offscreen canvas factory (tests); default = DOM canvases.
+ */
+export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, createCanvas = null } = {}) {
   const ctx = canvas.getContext('2d');
   const V = cfg.view;
-  const PH = cfg.physics;
-  const RL = cfg.rail;
-  const R = PH.ballRadius;
+  const R = cfg.physics.ballRadius;
 
   let cssW = Math.max(1, canvas.clientWidth || 390);
   let cssH = Math.max(1, canvas.clientHeight || 844);
   let dpr = 1;
   let skinId = 'classic';
+  let stadiumId = 'day';
   let themeId = 'day';
+  let styleId = 'retro';
+  let styleOverride = null;
+  let style = getStyle('retro');
   let time = 0;
+  let phaseNow = 'idle';
+  let lastFrame = null; // last built frame (style onFx hooks read its palette)
 
   // palette crossfade (tier changes)
   let curTier = 0;
-  let palFrom = themePalette(themeId, 0);
+  let palFrom = basePalette(themeId, 0);
   let palTo = palFrom;
   let palT = 1;
+  let palKeyFrom = palKeyOf(themeId, 0);
+  let palKeyTo = palKeyFrom;
+  let warmTier = 0; // dev start round: tier a run will open at, pre-warmed on the menu
+
+  // adaptive quality (only while the style is adaptive)
+  const quality = createQualityMonitor();
+  let lowQ = false;
+
+  // aim assist: 'full' | 'fade' | 'off', latched per shot (V2_SPEC §6.3)
+  let aimPending = 'full';
+  let aimLatched = 'full';
+  let aimShotRef = null;
+  let aimTimeSeen = 0;
+  let lastRailAlpha = 0;
+  let lastDotsAlpha = 0;
 
   // juice state
   const particles = [];
   const rings = [];
+  const glows = [];
   let shakeAmp = 0;
   let shakeDur = 0;
   let shakeT = 0;
@@ -66,21 +105,41 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
   let lockColor = null;
   const trail = [];
   let fxAcc = 0;
-  // displayed post heights (tweened when a new attempt changes bar / top)
   const postShow = { ref: null, bar: 0, top: 0, fromBar: 0, fromTop: 0, t: 1 };
-  // attempt banner ("38 YD FIELD GOAL") clock: seconds since the attempt was installed
   let bannerT = 99;
   let bannerOn = false;
   let lastShot = null;
-  // kicking-net ripple (game 'net' event)
   const netFx = { t: 9, y: 0, amp: 0 };
+  let wipeT = WIPE_TIME;
 
   if (debug) {
     const chk = checkSchedule(500, cfg);
     console.assert(chk.ok, '[flick-goal] difficulty schedule violations', chk.failures);
   }
 
-  // ------------------------------------------------------------------ helpers
+  // ------------------------------------------------------------------ layers (adaptive styles)
+  const makeCanvas = (w, h) => {
+    try { return createCanvas ? createCanvas(w, h) : defaultMakeCanvas(w, h); } catch (_) { return null; }
+  };
+  const bgScale = () => (lowQ ? 1 : Math.min(dpr, 2));
+  const edpr = () => (lowQ ? Math.min(dpr, 2) : dpr);
+  const palState = { from: palFrom, to: palTo, keyFrom: palKeyFrom, keyTo: palKeyTo, t: 1, lowQ: false };
+  const layers = createLayers({
+    makeCanvas,
+    getScale: bgScale,
+    getPhase: () => phaseNow,
+    getPalState: () => {
+      palState.from = palFrom; palState.to = palTo; palState.keyFrom = palKeyFrom; palState.keyTo = palKeyTo;
+      palState.t = palT; palState.lowQ = lowQ;
+      return palState;
+    },
+    viewSize: () => ({ w: cssW, h: cssH }),
+    promoteBitmaps: !createCanvas,
+    debug,
+  });
+  const calmPhase = () => phaseNow === 'idle' || phaseNow === 'intro' || phaseNow === 'miss' || phaseNow === 'over';
+
+  // ------------------------------------------------------------------ juice helpers
   function ballPos() {
     const b = game.world.ball;
     return { x: b.x, y: b.y };
@@ -88,6 +147,10 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
   function addParticle(p) {
     if (particles.length >= MAX_PARTICLES) particles.shift();
     particles.push(p);
+  }
+  function addGlow(x, y, r, color, a, dur) {
+    if (glows.length > 24) glows.shift();
+    glows.push({ x, y, r, color, a, t: 0, dur: Math.max(0.05, dur || 0.4) });
   }
   function shake(px, dur) {
     if (px >= shakeAmp * (1 - shakeT / Math.max(shakeDur, 1e-6))) {
@@ -104,7 +167,9 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     squash = { along, across, t: 0, dur, angle };
   }
   function rand(a, b) { return a + Math.random() * (b - a); }
-
+  function ring(x, y, dur, r0, r1, color, w, t0 = 0) {
+    rings.push({ x, y, t: t0, dur, r0, r1, color, w });
+  }
   function confetti(x, y, n, spread = 1) {
     for (let i = 0; i < n; i++) {
       const a = rand(0.15, Math.PI - 0.15);
@@ -132,6 +197,14 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       });
     }
   }
+  function puffs(x, n, color, strength = 1) {
+    for (let i = 0; i < n; i++) {
+      addParticle({
+        kind: 'circle', x: x + rand(-10, 10), y: rand(2, 8), vx: rand(-90, 90) * strength, vy: rand(20, 90) * strength, g: 120, drag: 2.5,
+        life: rand(0.4, 0.8), max: 0.8, size: rand(5, 10) * strength, color, grow: true,
+      });
+    }
+  }
   function starBurst(x, y, n) {
     for (let i = 0; i < n; i++) {
       const a = (i / n) * TAU + rand(-0.1, 0.1);
@@ -146,6 +219,18 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       addParticle({ kind: 'star', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: -60, drag: 3, life: rand(0.35, 0.6), max: 0.6, size: rand(4, 7), color, rot: rand(0, TAU), vr: rand(-8, 8) });
     }
   }
+  /** Juice API handed to style.onFx(name, e, api, f). */
+  const fxApi = {
+    confetti, sparks, dust, puffs, starBurst, sparkle, addParticle, addGlow, ring, shake,
+    flash: doFlash, squash: setSquash, rand, ballPos,
+  };
+  function styleFx(name, e) {
+    try {
+      style.onFx(name, e, fxApi, lastFrame || { pal: palTo, themeId, mode: game.world.mode, cfg, time });
+    } catch (err) {
+      if (debug) console.warn('[flick-goal] style fx failed', name, err);
+    }
+  }
 
   // ------------------------------------------------------------------ events
   const unsubs = [
@@ -155,24 +240,19 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       markerPop = 1;
       lockColor = e.inBand ? '#39D98A' : '#FF5A5F';
       trail.length = 0;
-      const p = ballPos();
-      for (let i = 0; i < 6; i++) {
-        addParticle({ kind: 'rect', x: p.x + rand(-6, 6), y: 4, vx: rand(-60, 60), vy: rand(80, 220), g: 900, drag: 1, life: 0.45, max: 0.45, size: rand(3, 5), color: palTo.groundDark, rot: rand(0, TAU), vr: rand(-10, 10) });
-      }
+      styleFx('flick', e);
     }),
     game.on('bounce', (e) => {
       const p = ballPos();
       if (e.kind === 'ground') {
-        if (e.impact > 140) {
-          setSquash(0.72, 1.28, 0.2, Math.PI / 2);
-          dust(p.x, Math.min(10, 3 + Math.floor(e.impact / 120)), withAlpha('#FFFFFF', 0.85));
-        }
+        if (e.impact > 140) setSquash(0.72, 1.28, 0.2, Math.PI / 2);
       } else {
         const b = game.world.ball;
         setSquash(0.7, 1.3, 0.18, Math.atan2(b.vy, b.vx));
         sparks(p.x, p.y, 10);
         shake(5, 0.15);
       }
+      styleFx('bounce', e);
     }),
     game.on('score', (e) => {
       const w = game.world;
@@ -182,23 +262,25 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       if (e.perfect) {
         confetti(x, y, 60, 1.15);
         starBurst(x, y, 10);
-        rings.push({ x, y, t: 0, dur: 0.45, r0: 10, r1: 130, color: '#FFFFFF', w: 6 });
-        rings.push({ x, y, t: -0.08, dur: 0.5, r0: 6, r1: 90, color: '#FFE45C', w: 4 });
+        ring(x, y, 0.45, 10, 130, '#FFFFFF', 6);
+        ring(x, y, 0.5, 6, 90, '#FFE45C', 4, -0.08);
         doFlash(0.25);
         shake(8, 0.25);
       } else {
         confetti(x, y, 24);
-        rings.push({ x, y, t: 0, dur: 0.35, r0: 8, r1: 70, color: '#FFFFFF', w: 4 });
+        ring(x, y, 0.35, 8, 70, '#FFFFFF', 4);
         doFlash(0.1);
         shake(4, 0.15);
       }
       if (e.doink) sparks(ballPos().x, ballPos().y, 8, '#FFFFFF');
+      styleFx('score', e);
     }),
-    game.on('coin', () => {
+    game.on('coin', (e) => {
       const pk = game.world.pickup;
       const p = pk || ballPos();
       sparkle(p.x, p.y, 12);
-      rings.push({ x: p.x, y: p.y, t: 0, dur: 0.3, r0: 6, r1: 40, color: '#FFD54F', w: 4 });
+      ring(p.x, p.y, 0.3, 6, 40, '#FFD54F', 4);
+      styleFx('coin', e);
     }),
     game.on('net', (e) => {
       netFx.t = 0;
@@ -206,22 +288,34 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       netFx.amp = clamp((e.impact || 0) / 700, 0.25, 1);
       const b = game.world.ball;
       setSquash(0.8, 1.15, 0.16, Math.atan2(b.vy, b.vx));
+      styleFx('net', e);
     }),
-    game.on('land', (e) => {
-      dust(e.x, 8, withAlpha('#FFFFFF', 0.9));
-    }),
-    game.on('miss', () => {
+    game.on('land', (e) => styleFx('land', e)),
+    game.on('miss', (e) => {
       shake(10, 0.3);
       doFlash(0.14, '#FF5A5F');
+      styleFx('miss', e);
     }),
-    game.on('runStart', () => {
+    game.on('runStart', (e) => {
       trail.length = 0;
       lockColor = null;
+      if (e && e.cut) wipeT = 0;
+      styleFx('runStart', e);
     }),
-    game.on('continue', () => {
+    game.on('continue', (e) => {
       trail.length = 0;
       lockColor = null;
-      rings.push({ x: game.world.teeX, y: R, t: 0, dur: 0.5, r0: 10, r1: 120, color: '#FFFFFF', w: 5 });
+      ring(game.world.teeX, R, 0.5, 10, 120, '#FFFFFF', 5);
+      styleFx('continue', e);
+    }),
+    game.on('modeChange', (e) => {
+      wipeT = 0;
+      postShow.ref = null;
+      trail.length = 0;
+      particles.length = 0;
+      rings.length = 0;
+      glows.length = 0;
+      styleFx('modeChange', e);
     }),
   ];
 
@@ -244,6 +338,10 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       rings[i].t += dt;
       if (rings[i].t >= rings[i].dur) rings.splice(i, 1);
     }
+    for (let i = glows.length - 1; i >= 0; i--) {
+      glows[i].t += dt;
+      if (glows[i].t >= glows[i].dur) glows.splice(i, 1);
+    }
     if (shakeT < shakeDur) shakeT += dt;
     netFx.t += dt;
     flash = Math.max(0, flash - dt * 1.6);
@@ -253,268 +351,24 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     }
     markerPop = Math.max(0, markerPop - dt / 0.2);
     if (palT < 1) palT = Math.min(1, palT + dt / 0.8);
+    if (wipeT < WIPE_TIME) wipeT = Math.min(WIPE_TIME, wipeT + dt);
   }
 
   function currentPalette() {
     return palT >= 1 ? palTo : mixPalette(palFrom, palTo, easeInOut(palT));
   }
 
-  // ------------------------------------------------------------------ drawing: world pieces
-  function drawSky(pal) {
-    const g = ctx.createLinearGradient(0, 0, 0, cssH);
-    g.addColorStop(0, pal.skyTop);
-    g.addColorStop(1, pal.skyBottom);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, cssW, cssH);
-  }
-
-  function ribbon(x, y, k, color, phase) {
-    const wv = Math.sin(time * 9 + phase);
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(x, y + 2 * k);
-    ctx.quadraticCurveTo(x + 10 * k, y + (2 + wv * 3) * k, x + (19 + wv * 2) * k, y + (6 + wv * 2) * k);
-    ctx.quadraticCurveTo(x + 10 * k, y + (9 - wv * 2) * k, x, y + 13 * k);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  /** layer: 'far' (base, stem, far upright, crossbar) or 'near' (near upright). */
-  function drawPost(post, layer, pal, T, pop = 1) {
-    if (!post) return;
-    const k = T.k;
-    const X = T.sx(post.x);
-    const G = T.sy(0);
-    const B = T.sy(post.bar);
-    const Tp = T.sy(post.top);
-    if (X < -80 || X > cssW + 80) return;
-    const o = PH.uprightOffset * k;
-    ctx.save();
-    if (pop < 1) {
-      ctx.translate(X, G);
-      ctx.scale(Math.max(0.001, pop), Math.max(0.001, pop));
-      ctx.translate(-X, -G);
-    }
-    ctx.lineCap = 'round';
-    const post1 = pal.post;
-    if (layer === 'far') {
-      // padded base
-      ctx.fillStyle = mixColor(pal.accent, '#000000', 0.12);
-      roundRectPath(ctx, X - 10 * k, G - 40 * k, 20 * k, 40 * k + 4, 6 * k);
-      ctx.fill();
-      ctx.fillStyle = withAlpha('#FFFFFF', 0.35);
-      ctx.fillRect(X - 6 * k, G - 34 * k, 3 * k, 28 * k);
-      // stem
-      ctx.strokeStyle = post1;
-      ctx.lineWidth = Math.max(3, 2 * PH.stemRadius * k);
-      ctx.beginPath();
-      ctx.moveTo(X, G - 36 * k);
-      ctx.lineTo(X, B);
-      ctx.stroke();
-      // far upright (darker, thinner -> depth)
-      ctx.strokeStyle = mixColor(post1, '#000000', 0.2);
-      ctx.lineWidth = Math.max(2.5, 7.5 * k);
-      ctx.beginPath();
-      ctx.moveTo(X - o, B);
-      ctx.lineTo(X - o, Tp);
-      ctx.stroke();
-      ribbon(X - o, Tp, k, mixColor(pal.accent, '#000000', 0.15), 0);
-      // crossbar
-      ctx.strokeStyle = post1;
-      ctx.lineWidth = Math.max(3, 2 * PH.crossbarRadius * k);
-      ctx.beginPath();
-      ctx.moveTo(X - o, B);
-      ctx.lineTo(X + o, B);
-      ctx.stroke();
-      ctx.strokeStyle = withAlpha('#FFFFFF', 0.55);
-      ctx.lineWidth = Math.max(1, 2.2 * k);
-      ctx.beginPath();
-      ctx.moveTo(X - o * 0.6, B - 2 * k);
-      ctx.lineTo(X + o * 0.6, B - 2 * k);
-      ctx.stroke();
-    } else {
-      ctx.strokeStyle = post1;
-      ctx.lineWidth = Math.max(3, 9.5 * k);
-      ctx.beginPath();
-      ctx.moveTo(X + o, B);
-      ctx.lineTo(X + o, Tp);
-      ctx.stroke();
-      ctx.strokeStyle = withAlpha('#FFFFFF', 0.55);
-      ctx.lineWidth = Math.max(1, 2.4 * k);
-      ctx.beginPath();
-      ctx.moveTo(X + o - 2 * k, B - 4 * k);
-      ctx.lineTo(X + o - 2 * k, Tp + 6 * k);
-      ctx.stroke();
-      ribbon(X + o, Tp, k, pal.accent, 1.7);
-    }
-    ctx.restore();
-  }
-
-  /**
-   * Kicking net behind the uprights (world x = post.x + field.netOffset), drawn in the
-   * same pseudo-3D as the post: far pole, mesh, near pole. Ripples when the ball hits it.
-   */
-  function drawNet(post, pal, T) {
-    if (!post) return;
-    const F = cfg.field;
-    const k = T.k;
-    const X = T.sx(post.x + F.netOffset);
-    const o = F.netHalf * k;
-    if (X + o < -20 || X - o > cssW + 20) return;
-    const G = T.sy(0);
-    const top = post.top + F.netAbove;
-    const bot = post.bar * F.netBottomFrac;
-    const Tp = T.sy(top);
-    const Bt = T.sy(bot);
-    const neon = themeId === 'arcade';
-    const pole = neon ? mixColor(pal.line, '#000000', 0.35) : '#2E3440';
-    const mesh = neon ? withAlpha(pal.zone || pal.accent, 0.55) : withAlpha('#FFFFFF', 0.4);
-    ctx.save();
-    ctx.lineCap = 'round';
-    // far pole (thinner, darker -> depth)
-    ctx.strokeStyle = mixColor(pole, '#000000', 0.25);
-    ctx.lineWidth = Math.max(1.5, 3.2 * k);
-    ctx.beginPath();
-    ctx.moveTo(X - o, G);
-    ctx.lineTo(X - o, Tp - 6 * k);
-    ctx.stroke();
-    // mesh: a sagging curtain between the poles, rippling where the ball hit
-    const rip = netFx.t < 1.2 ? netFx.amp * Math.exp(-netFx.t * 4.5) : 0;
-    const dxAt = (y) => {
-      if (rip <= 0.001) return 0;
-      const d = (y - netFx.y) / 70;
-      return rip * 16 * k * Math.exp(-d * d) * Math.cos(netFx.t * 22);
-    };
-    ctx.strokeStyle = mesh;
-    ctx.lineWidth = Math.max(0.6, 0.8 * k);
-    ctx.beginPath();
-    const cols = 6;
-    const stepY = 12;
-    for (let i = 0; i <= cols; i++) {
-      const u = i / cols;
-      const bow = Math.sin(Math.PI * u); // middle strands bulge back when hit
-      const x0 = X - o + 2 * o * u;
-      for (let y = bot; y <= top; y += stepY / 2) {
-        const sx = x0 + dxAt(y) * bow;
-        const sy = T.sy(y);
-        if (y === bot) ctx.moveTo(sx, sy);
-        else ctx.lineTo(sx, sy);
-      }
-    }
-    for (let y = bot + stepY; y < top; y += stepY) {
-      const sy = T.sy(y);
-      if (sy > cssH + 4 || sy < -4) continue;
-      const d = dxAt(y);
-      ctx.moveTo(X - o, sy);
-      ctx.quadraticCurveTo(X + d, sy + 1.5 * k, X + o, sy);
-    }
-    ctx.stroke();
-    // weighted bottom hem + top cable
-    ctx.fillStyle = withAlpha(neon ? pal.zone || pal.accent : '#1E2330', 0.7);
-    ctx.fillRect(X - o, Bt - 2.5 * k, 2 * o, 3.5 * k);
-    ctx.strokeStyle = neon ? withAlpha(pal.line, 0.9) : withAlpha('#FFFFFF', 0.85);
-    ctx.lineWidth = Math.max(1, 1.8 * k);
-    ctx.beginPath();
-    ctx.moveTo(X - o, Tp);
-    ctx.lineTo(X + o, Tp);
-    ctx.stroke();
-    // near pole + padded base
-    ctx.strokeStyle = pole;
-    ctx.lineWidth = Math.max(2, 4.2 * k);
-    ctx.beginPath();
-    ctx.moveTo(X + o, G);
-    ctx.lineTo(X + o, Tp - 6 * k);
-    ctx.stroke();
-    ctx.fillStyle = mixColor(pal.accent, '#000000', 0.12);
-    roundRectPath(ctx, X + o - 5 * k, G - 22 * k, 10 * k, 22 * k + 2, 3 * k);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function drawTee(x, pal, T, alpha) {
-    if (alpha <= 0) return;
-    const k = T.k;
-    const X = T.sx(x);
-    const G = T.sy(0);
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = withAlpha('#000000', 0.15);
-    ctx.beginPath();
-    ctx.ellipse(X, G + 1, 12 * k, 3 * k, 0, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = pal.accent;
-    ctx.beginPath();
-    ctx.moveTo(X - 9 * k, G - TEE_H * k);
-    ctx.lineTo(X + 9 * k, G - TEE_H * k);
-    ctx.lineTo(X + 4 * k, G);
-    ctx.lineTo(X - 4 * k, G);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = withAlpha('#FFFFFF', 0.4);
-    ctx.fillRect(X - 7 * k, G - TEE_H * k, 14 * k, 2 * k);
-    ctx.restore();
-  }
-
-  function drawCoin(pk, T) {
-    if (!pk || pk.collected) return;
-    const k = T.k;
-    const bob = Math.sin(time * 3) * 3;
-    const X = T.sx(pk.x);
-    const Y = T.sy(pk.y + bob);
-    const r = cfg.pickups.radius * k;
-    // glow
-    ctx.fillStyle = withAlpha('#FFE45C', 0.18 + 0.1 * Math.sin(time * 5));
-    ctx.beginPath();
-    ctx.arc(X, Y, r * 1.7, 0, TAU);
-    ctx.fill();
-    const sx = Math.max(0.18, Math.abs(Math.cos(time * 3.2)));
-    ctx.save();
-    ctx.translate(X, Y);
-    ctx.scale(sx, 1);
-    ctx.fillStyle = '#E09B00';
-    ctx.beginPath();
-    ctx.arc(0, r * 0.12, r, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = '#FFC83D';
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, TAU);
-    ctx.fill();
-    ctx.strokeStyle = '#FFE7A0';
-    ctx.lineWidth = Math.max(1, r * 0.14);
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.62, 0, TAU);
-    ctx.stroke();
-    ctx.fillStyle = '#FFF6D0';
-    ctx.fillRect(-r * 0.12, -r * 0.4, r * 0.24, r * 0.8);
-    ctx.restore();
-  }
-
-  function drawTrail(T, skin) {
-    if (trail.length < 2) return;
-    const n = trail.length;
-    const r = R * T.k;
-    ctx.lineCap = 'round';
-    for (let i = 1; i < n; i++) {
-      const u = i / (n - 1);
-      ctx.strokeStyle = withAlpha(skin.trail, 0.45 * u);
-      ctx.lineWidth = Math.max(1, r * 1.5 * u);
-      ctx.beginPath();
-      ctx.moveTo(T.sx(trail[i - 1].x), T.sy(trail[i - 1].y));
-      ctx.lineTo(T.sx(trail[i].x), T.sy(trail[i].y));
-      ctx.stroke();
-    }
-  }
-
-  function teeLift(skin) {
-    if (skin.shape === 'round') return 1.05 * R + TEE_H - R;
+  // ------------------------------------------------------------------ ball state
+  function teeLift(meta) {
+    if (meta.shape === 'round') return 1.05 * R + TEE_H - R;
     const s = Math.sin(TEE_ROT);
     const c = Math.cos(TEE_ROT);
     const half = Math.sqrt((1.3 * R * s) ** 2 + (0.85 * R * c) ** 2);
     return half + TEE_H - R;
   }
 
-  function liftAmount(w, skin) {
-    const L = teeLift(skin);
+  function liftAmount(w, meta) {
+    const L = teeLift(meta);
     switch (w.phase) {
       case 'idle':
       case 'aim':
@@ -532,121 +386,28 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     }
   }
 
-  function drawBallAndShadow(w, T, a, skin) {
+  /** Interpolated ball state in screen space (V2_SPEC §5.3 `st`). */
+  function ballState(w, f, a, meta) {
     const b = w.ball;
-    const bx = lerp(b.px, b.x, a);
-    const byRaw = lerp(b.py, b.y, a);
-    const lift = liftAmount(w, skin);
-    const by = byRaw + lift;
-    const rot = lerp(b.prot, b.rot, a);
-    const k = T.k;
-    const r = R * k;
-    // ground shadow
-    const G = T.sy(0);
-    if (G < cssH + 20) {
-      const hgt = Math.max(0, byRaw - R);
-      const s = clamp(1 - hgt / 520, 0.25, 1);
-      ctx.fillStyle = withAlpha('#000000', 0.2 * s);
-      ctx.beginPath();
-      ctx.ellipse(T.sx(bx), G + 1, 1.25 * r * s, 0.3 * r * s, 0, 0, TAU);
-      ctx.fill();
-    }
-    const X = T.sx(bx);
-    const Y = T.sy(by);
-    ctx.save();
-    ctx.translate(X, Y);
+    const wx = lerp(b.px, b.x, a);
+    const wy = lerp(b.py, b.y, a);
+    const lift = liftAmount(w, meta);
+    const st = {
+      X: f.sx(wx), Y: f.sy(wy + lift), r: R * f.k, rot: -lerp(b.prot, b.rot, a),
+      sx: 1, sy: 1, angle: 0, lift, alpha: 1, wx, wy,
+    };
     if (squash) {
       const u = clamp(squash.t / squash.dur, 0, 1);
       const e = (1 - u) * (1 - u);
-      const along = 1 + (squash.along - 1) * e;
-      const across = 1 + (squash.across - 1) * e;
-      const ang = squash.angle === null ? Math.atan2(b.vy, b.vx) : squash.angle;
-      ctx.rotate(-ang);
-      ctx.scale(along, across);
-      ctx.rotate(ang);
+      st.sx = 1 + (squash.along - 1) * e;
+      st.sy = 1 + (squash.across - 1) * e;
+      st.angle = squash.angle === null ? Math.atan2(b.vy, b.vx) : squash.angle;
     }
-    drawBall(ctx, skinId, 0, 0, r, -rot, time);
-    ctx.restore();
-    return { x: X, y: Y, r };
+    return st;
   }
 
-  function drawParticles(T) {
-    for (const p of particles) {
-      const X = T.sx(p.x);
-      const Y = T.sy(p.y);
-      if (X < -40 || X > cssW + 40 || Y < -40 || Y > cssH + 40) continue;
-      const u = clamp(p.life / p.max, 0, 1);
-      ctx.globalAlpha = p.kind === 'rect' ? Math.min(1, u * 2.5) : u;
-      ctx.fillStyle = p.color;
-      switch (p.kind) {
-        case 'rect': {
-          ctx.save();
-          ctx.translate(X, Y);
-          ctx.rotate(p.rot);
-          ctx.scale(1, Math.cos(p.rot * 1.7));
-          ctx.fillRect(-p.size / 2, -p.size * 0.3, p.size, p.size * 0.6);
-          ctx.restore();
-          break;
-        }
-        case 'circle': {
-          const s = p.grow ? p.size * (1.6 - u * 0.6) : p.size * u;
-          ctx.beginPath();
-          ctx.arc(X, Y, Math.max(0.5, s), 0, TAU);
-          ctx.fill();
-          break;
-        }
-        case 'square':
-          ctx.fillRect(X - p.size / 2, Y - p.size / 2, p.size, p.size);
-          break;
-        case 'spark': {
-          ctx.strokeStyle = p.color;
-          ctx.lineWidth = p.size;
-          ctx.lineCap = 'round';
-          const l = 0.03;
-          ctx.beginPath();
-          ctx.moveTo(X, Y);
-          ctx.lineTo(X - p.vx * l * T.k, Y + p.vy * l * T.k);
-          ctx.stroke();
-          break;
-        }
-        case 'star':
-          starPath(X, Y, p.size * (0.5 + 0.5 * u), p.rot || 0);
-          ctx.fill();
-          break;
-        default:
-          break;
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  function starPath(x, y, r, rot) {
-    ctx.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const a = rot + (i / 10) * TAU - Math.PI / 2;
-      const rr = i % 2 ? r * 0.45 : r;
-      const px = x + Math.cos(a) * rr;
-      const py = y + Math.sin(a) * rr;
-      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-    }
-    ctx.closePath();
-  }
-
-  function drawRings(T) {
-    for (const g of rings) {
-      if (g.t < 0) continue;
-      const u = clamp(g.t / g.dur, 0, 1);
-      const e = 1 - (1 - u) * (1 - u);
-      ctx.strokeStyle = withAlpha(g.color, 1 - u);
-      ctx.lineWidth = Math.max(1, g.w * (1 - u * 0.7));
-      ctx.beginPath();
-      ctx.arc(T.sx(g.x), T.sy(g.y), lerp(g.r0, g.r1, e), 0, TAU);
-      ctx.stroke();
-    }
-  }
-
-  function spawnSkinFx(w, dt, skin) {
-    if (skin.fx === 'none' || dt <= 0) return;
+  function spawnSkinFx(w, dt, meta) {
+    if (meta.fx === 'none' || dt <= 0) return;
     const b = w.ball;
     const moving = (w.phase === 'fly' || w.phase === 'settle' || w.phase === 'miss') && Math.hypot(b.vx, b.vy) > 150;
     if (!moving) { fxAcc = 0; return; }
@@ -657,18 +418,18 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       const y = b.y + rand(-6, 6);
       const bvx = -b.vx * 0.08;
       const bvy = -b.vy * 0.08;
-      switch (skin.fx) {
+      switch (meta.fx) {
         case 'fire':
           addParticle({ kind: 'circle', x, y, vx: bvx + rand(-30, 30), vy: bvy + rand(20, 90), g: -120, drag: 2, life: rand(0.25, 0.45), max: 0.45, size: rand(4, 7), color: Math.random() < 0.5 ? '#FFB020' : '#FF5A1F' });
           break;
         case 'sparkle':
-          addParticle({ kind: 'star', x, y, vx: bvx + rand(-40, 40), vy: bvy + rand(-40, 40), g: 0, drag: 2, life: rand(0.3, 0.55), max: 0.55, size: rand(3, 6), color: Math.random() < 0.5 ? '#FFFFFF' : skin.trail, rot: rand(0, TAU), vr: rand(-6, 6) });
+          addParticle({ kind: 'star', x, y, vx: bvx + rand(-40, 40), vy: bvy + rand(-40, 40), g: 0, drag: 2, life: rand(0.3, 0.55), max: 0.55, size: rand(3, 6), color: Math.random() < 0.5 ? '#FFFFFF' : meta.trail, rot: rand(0, TAU), vr: rand(-6, 6) });
           break;
         case 'frost':
           addParticle({ kind: 'circle', x, y, vx: bvx + rand(-30, 30), vy: bvy + rand(-60, 0), g: 120, drag: 1.5, life: rand(0.4, 0.7), max: 0.7, size: rand(1.5, 3.5), color: Math.random() < 0.5 ? '#FFFFFF' : '#B8F1FF' });
           break;
         case 'pixel':
-          addParticle({ kind: 'square', x, y, vx: bvx, vy: bvy, g: 0, drag: 2, life: rand(0.25, 0.45), max: 0.45, size: rand(3, 6), color: Math.random() < 0.5 ? skin.trail : '#FFFFFF' });
+          addParticle({ kind: 'square', x, y, vx: bvx, vy: bvy, g: 0, drag: 2, life: rand(0.25, 0.45), max: 0.45, size: rand(3, 6), color: Math.random() < 0.5 ? meta.trail : '#FFFFFF' });
           break;
         default:
           break;
@@ -676,8 +437,8 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     }
   }
 
-  // ------------------------------------------------------------------ attempts: post tween, ghost ball, labels
-  /** The post stays on the end line; a new attempt telescopes it to the new heights. */
+  // ------------------------------------------------------------------ FIELD: post tween, ghost ball, labels
+  /** FIELD: the post stays on the end line; a new attempt telescopes it to the new heights. */
   function displayPost(w, dt) {
     const p = w.post;
     if (!p) return null;
@@ -700,42 +461,35 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     return { x: p.x, bar: postShow.bar, top: postShow.top };
   }
 
-  /** The previous ball stays where it came to rest and fades while the camera swoops away. */
-  function drawGhostBall(w, T) {
+  /** FIELD: the previous ball stays where it came to rest and fades while the camera swoops away. */
+  function ghostState(w, f) {
     const g = w.oldBall;
-    if (!g || !w.swoop) return;
+    if (!g || !w.swoop) return null;
     const u = clamp(w.swoop.t / w.swoop.dur, 0, 1);
     const A = 1 - easeInOut(u);
-    if (A <= 0.01) return;
-    const X = T.sx(g.x);
-    const Y = T.sy(g.y);
-    const r = R * T.k;
-    if (X < -3 * r || X > cssW + 3 * r || Y < -3 * r || Y > cssH + 3 * r) return;
-    ctx.save();
-    ctx.globalAlpha = A;
-    ctx.fillStyle = withAlpha('#000000', 0.18);
-    ctx.beginPath();
-    ctx.ellipse(X, T.sy(0) + 1, 1.2 * r, 0.3 * r, 0, 0, TAU);
-    ctx.fill();
-    drawBall(ctx, skinId, X, Y, r, -g.rot, time);
-    ctx.restore();
+    if (A <= 0.01) return null;
+    const X = f.sx(g.x);
+    const Y = f.sy(g.y);
+    const r = R * f.k;
+    if (X < -3 * r || X > cssW + 3 * r || Y < -3 * r || Y > cssH + 3 * r) return null;
+    return { X, Y, r, rot: -g.rot, sx: 1, sy: 1, angle: 0, lift: 0, alpha: A, wx: g.x, wy: g.y };
   }
 
   /** Camera-swoop speed streaks (screen space) while the view pans to the next attempt. */
-  function drawSwoopStreaks(w, T, pal) {
+  function drawSwoopStreaks(w, f) {
     const sw = w.swoop;
     if (!sw) return;
     const c = w.cam;
-    const vx = (c.x - c.px) * cfg.sim.hz * T.k; // css px / s
+    const vx = (c.x - c.px) * cfg.sim.hz * f.k;
     const sp = Math.abs(vx);
     if (sp < 400) return;
     const A = clamp((sp - 400) / 1600, 0, 1) * 0.5;
     const len = clamp(sp * 0.09, 30, 180);
-    const dir = vx > 0 ? -1 : 1; // streaks trail opposite to the view motion
+    const dir = vx > 0 ? -1 : 1;
     ctx.save();
     ctx.lineCap = 'round';
     const top = cssH * 0.2;
-    const band = Math.max(40, T.sy(0) - top - 20);
+    const band = Math.max(40, f.gy - top - 20);
     for (let i = 0; i < 9; i++) {
       const y = top + ((i * 0.618 + 0.13) % 1) * band;
       const x = ((i * 0.37 + time * 1.9 * (0.6 + (i % 3) * 0.2)) % 1) * (cssW + len) - len / 2;
@@ -749,12 +503,12 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     ctx.restore();
   }
 
-  /** Small "38 YD FG" pill painted under the tee while aiming. */
-  function drawTeeLabel(w, T, alpha, pal) {
+  /** FIELD: small "38 YD FG" pill painted under the tee while aiming. */
+  function drawTeeLabel(w, f, alpha) {
     if (alpha <= 0.01 || !w.yards) return;
     const txt = `${w.yards} YD FG`;
-    const X = T.sx(w.teeX);
-    const G = T.sy(0);
+    const X = f.sx(w.teeX);
+    const G = f.gy;
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.font = `900 13px ${UI_FONT}`;
@@ -764,7 +518,6 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     const cx = clamp(X, pw / 2 + 8, cssW - pw / 2 - 8);
     const cy = G + 22;
     if (cy + ph < cssH) {
-      // pointer up to the kick spot
       ctx.fillStyle = 'rgba(20,28,50,0.72)';
       ctx.beginPath();
       const px = clamp(X, cx - pw / 2 + 10, cx + pw / 2 - 10);
@@ -783,7 +536,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     ctx.restore();
   }
 
-  /** Broadcast-style attempt banner, shown while the camera swoops to a fresh attempt. */
+  /** FIELD: broadcast-style attempt banner, shown while the camera swoops to a fresh attempt. */
   function drawAttemptBanner(w, pal) {
     if (!bannerOn || !w.yards) return;
     const intro = cfg.timing.introTime;
@@ -798,6 +551,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     const cy = Math.max(cssH * 0.3, 232);
     const bw = Math.min(250, cssW * 0.66);
     const bh = 58;
+    const d = edpr();
     ctx.save();
     ctx.globalAlpha = A;
     ctx.translate(cx, cy);
@@ -810,7 +564,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     ctx.fillRect(-bw / 2, -bh / 2, 9, bh);
     ctx.fillStyle = pal.zone || pal.accent;
     ctx.fillRect(-bw / 2 + 9, bh / 2 - 5, bw - 9, 5);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.translate(cx, cy);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
@@ -823,194 +577,68 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     ctx.restore();
   }
 
-  // ------------------------------------------------------------------ rail (screen space)
+  // ------------------------------------------------------------------ aim cues (screen space)
   function railAlpha(w) {
     switch (w.phase) {
-      case 'intro': return easeInOut(clamp(w.introT / cfg.timing.introTime, 0, 1));
+      case 'intro': return w.swoop ? 0 : easeInOut(clamp(w.introT / cfg.timing.introTime, 0, 1));
       case 'aim': return 1;
-      case 'fly': return clamp(1 - w.flightTime / RL.fadeOut, 0, 1);
+      case 'fly': return clamp(1 - w.flightTime / cfg.rail.fadeOut, 0, 1);
       default: return 0;
     }
   }
 
+  /** Latch the aim-assist mode for the shot on screen (new shot, or menu / game over). */
+  function latchAim(w) {
+    if (w.shot !== aimShotRef) {
+      aimShotRef = w.shot;
+      aimLatched = aimPending;
+      aimTimeSeen = 0;
+    } else if (w.phase === 'idle' || w.phase === 'over') {
+      aimLatched = aimPending;
+    }
+  }
+
   /**
-   * Aim cues: the rail track (only when `rail.visible`) and the launch-angle guide dots.
-   * The guide is always drawn; with the rail hidden it is the player's only aim cue.
+   * Slider (faded by the aim-assist mode: tutorial / upgrade) + guide dots (always, at the
+   * intro / flight fade alpha). The guide stays frozen at the tee in flight while it fades.
    */
-  function drawAim(w, ballScreen, a, pal, T, skin) {
+  function drawAim(w, ballScreen, a, pal, f, meta) {
+    lastRailAlpha = 0;
+    lastDotsAlpha = 0;
     const A = railAlpha(w);
     if (A <= 0.001 || !w.shot) return;
+    if (w.phase === 'aim') aimTimeSeen = w.phaseTime;
+    else if (w.phase === 'intro') aimTimeSeen = 0;
     const mk = w.marker;
     const t = mk.locked ? mk.t : lerp(mk.pt, mk.t, a);
-    if (RL.visible) drawRailTrack(w, ballScreen, t, A, pal);
-    // in flight the guide stays frozen at the tee (the kick that was taken) while it fades out
+    const railA = A * railFade(aimLatched, aimTimeSeen, cfg);
+    if (railA > 0.01) {
+      const geom = railGeometry(ballScreen, cssW, cssH, cfg);
+      drawRailTrack(ctx, geom, w.shot, t, railA, {
+        accent: pal.accent, lockColor, locked: mk.locked, markerPop, time,
+      }, cfg);
+      lastRailAlpha = railA;
+    }
     const anchor = w.phase === 'fly'
-      ? { x: T.sx(w.teeX), y: T.sy(R + teeLift(skin)) }
+      ? { x: f.sx(w.teeX), y: f.sy(R + teeLift(meta)) }
       : ballScreen;
-    drawGuide(w.shot, anchor, t, A);
-  }
-
-  /**
-   * Launch-angle guide: a short row of dots from the ball along the launch angle for rail
-   * position t. Dot spacing shows strength vs the shot's ideal power (guide.js): bunched =
-   * too weak, evenly spaced = right, stretched = too strong. Not a trajectory preview.
-   */
-  function drawGuide(shot, anchor, t, A) {
-    const { angle, dots } = guideLayout(shot, t, cfg);
-    const pop = 1 + 0.35 * markerPop;
-    const ca = Math.cos(angle);
-    const sa = Math.sin(angle);
-    ctx.save();
-    ctx.globalAlpha = A;
-    for (const dot of dots) {
-      const px = anchor.x + ca * dot.d;
-      const py = anchor.y - sa * dot.d;
-      const rr = dot.r * pop;
-      // drop shadow, soft dark rim, white dot
-      ctx.fillStyle = 'rgba(0,0,0,0.2)';
-      ctx.beginPath();
-      ctx.arc(px, py + 1.8, rr + RL.guideOutline, 0, TAU);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(20,28,50,0.42)';
-      ctx.beginPath();
-      ctx.arc(px, py, rr + RL.guideOutline, 0, TAU);
-      ctx.fill();
-      ctx.fillStyle = '#FFFFFF';
-      ctx.beginPath();
-      ctx.arc(px, py, rr, 0, TAU);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  function drawRailTrack(w, ballScreen, t, A, pal) {
-    const shot = w.shot;
-    const band = shot.band;
-    const th = RL.thickness;
-    const L = clamp(RL.lengthFrac * cssW, RL.minLen, RL.maxLen);
-    const ang = RL.angleDeg * DEG;
-    const ux = Math.cos(ang);
-    const uy = -Math.sin(ang);
-    let x0 = ballScreen.x + RL.offsetX;
-    let y0 = ballScreen.y + RL.offsetY;
-    let x1 = x0 + ux * L;
-    let y1 = y0 + uy * L;
-    const m = RL.edgeMargin + th / 2;
-    const minX = Math.min(x0, x1);
-    const maxX = Math.max(x0, x1);
-    const minY = Math.min(y0, y1);
-    const maxY = Math.max(y0, y1);
-    let dx = 0;
-    let dy = 0;
-    if (maxX + m > cssW) dx = cssW - m - maxX;
-    if (minX + dx - m < 0) dx = m - minX;
-    if (maxY + m > cssH) dy = cssH - m - maxY;
-    if (minY + dy - m < 0) dy = m - minY;
-    x0 += dx; y0 += dy; x1 += dx; y1 += dy;
-
-    const mk = w.marker;
-
-    ctx.save();
-    ctx.globalAlpha = A;
-    ctx.translate(x0, y0);
-    ctx.rotate(-ang);
-    // shadow + track
-    roundRectPath(ctx, -th / 2, -th / 2 + 5, L + th, th, th / 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.12)';
-    ctx.fill();
-    roundRectPath(ctx, -th / 2, -th / 2, L + th, th, th / 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.22)';
-    ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.stroke();
-    // direction chevrons (low/short -> high/long)
-    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    for (let x = 22; x < L - 10; x += 30) {
-      ctx.moveTo(x - 3, -5);
-      ctx.lineTo(x + 2, 0);
-      ctx.lineTo(x - 3, 5);
-    }
-    ctx.stroke();
-    // sweet band (computed from physics) — its fill fades with difficulty, but the
-    // edges are always drawn at a fixed, readable opacity so the target never vanishes.
-    const ba = clamp(shot.bandAlpha, 0, 1);
-    const lo = band.lo * L;
-    const hi = band.hi * L;
-    if (ba > 0.01) {
-      const pulse = 0.85 + 0.15 * Math.sin(time * 6);
-      roundRectPath(ctx, lo - 5, -th / 2 - 5, hi - lo + 10, th + 10, (th + 10) / 2);
-      ctx.fillStyle = withAlpha(BAND, 0.3 * ba * pulse);
-      ctx.fill();
-      roundRectPath(ctx, lo, -th / 2 + 4, hi - lo, th - 8, (th - 8) / 2);
-      ctx.fillStyle = withAlpha(BAND, ba);
-      ctx.fill();
-      const plo = band.perfLo * L;
-      const phi = band.perfHi * L;
-      if (phi - plo > 2) {
-        roundRectPath(ctx, plo, -th / 2 + 7.5, phi - plo, th - 15, (th - 15) / 2);
-        ctx.fillStyle = withAlpha('#F0FFF6', Math.min(1, ba * 1.2));
-        ctx.fill();
-      }
-    }
-    // band edge brackets: fixed opacity, poking out above and below the track
-    const eh = th / 2 + 6;
-    ctx.lineCap = 'round';
-    ctx.lineWidth = 6.5;
-    ctx.strokeStyle = 'rgba(8,40,28,0.4)';
-    ctx.beginPath();
-    ctx.moveTo(lo, -eh); ctx.lineTo(lo, eh);
-    ctx.moveTo(hi, -eh); ctx.lineTo(hi, eh);
-    ctx.stroke();
-    ctx.lineWidth = 3.5;
-    ctx.strokeStyle = BAND;
-    ctx.stroke();
-    // marker: a slim needle (~8px) so the green band stays visible on both sides of it
-    const mx = t * L;
-    const nw = RL.markerWidth * (1 + 0.3 * markerPop);
-    const nh = (th + 2 * RL.markerOverhang) * (1 + 0.25 * markerPop);
-    const mcol = mk.locked && lockColor ? lockColor : pal.accent;
-    roundRectPath(ctx, mx - nw / 2, -nh / 2 + 3, nw, nh, nw / 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.28)';
-    ctx.fill();
-    roundRectPath(ctx, mx - nw / 2, -nh / 2, nw, nh, nw / 2);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fill();
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = mcol;
-    ctx.stroke();
-    // pointer cap above the track (rail-local "up" is -y)
-    const cy = -nh / 2 - 2;
-    ctx.beginPath();
-    ctx.moveTo(mx - 8, cy - 10);
-    ctx.lineTo(mx + 8, cy - 10);
-    ctx.lineTo(mx, cy);
-    ctx.closePath();
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.stroke();
-    ctx.fillStyle = mcol;
-    ctx.fill();
-    ctx.restore();
+    drawGuideDots(ctx, w.shot, anchor, t, A, markerPop, cfg);
+    lastDotsAlpha = A;
   }
 
   // ------------------------------------------------------------------ debug
-  function drawDebug(w, T) {
+  function drawDebug(w, f) {
     const s = w.shot;
     if (!s) return;
-    const P = { x: T.sx(s.postX), bar: T.sy(s.bar), top: T.sy(s.top) };
+    const PH = cfg.physics;
+    const P = { x: f.sx(s.postX), bar: f.sy(s.bar), top: f.sy(s.top) };
     ctx.save();
     ctx.strokeStyle = 'rgba(40,220,100,0.95)';
     ctx.fillStyle = 'rgba(80,255,140,0.18)';
     ctx.lineWidth = 2;
-    const o = PH.uprightOffset * T.k;
+    const o = PH.uprightOffset * f.k;
     ctx.fillRect(P.x - o, P.top, 2 * o, P.bar - P.top);
     ctx.strokeRect(P.x - o, P.top, 2 * o, P.bar - P.top);
-    // tStar trajectory
     ctx.setLineDash([4, 5]);
     ctx.strokeStyle = 'rgba(255,255,255,0.8)';
     ctx.beginPath();
@@ -1020,69 +648,150 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       const x = s.teeX + ((s.d + 80) * i) / 60;
       const tau = (x - s.teeX) / vx;
       const y = R + vy * tau - 0.5 * PH.gravity * tau * tau;
-      if (i === 0) ctx.moveTo(T.sx(x), T.sy(y)); else ctx.lineTo(T.sx(x), T.sy(y));
+      if (i === 0) ctx.moveTo(f.sx(x), f.sy(y)); else ctx.lineTo(f.sx(x), f.sy(y));
       if (y < 0) break;
     }
     ctx.stroke();
     ctx.setLineDash([]);
+    const q = getQuality();
     const lines = [
       `n ${s.made}  v ${s.speed.toFixed(3)}  W ${s.targetWidth.toFixed(3)}/${s.band.width.toFixed(3)}`,
       `D ${(s.band.width / s.speed).toFixed(3)}s (sched ${dwell(s.made, cfg).toFixed(3)})  L ${s.clock.toFixed(2)}s`,
       `band [${s.band.lo.toFixed(3)}, ${s.band.hi.toFixed(3)}]  s ${s.s.toFixed(2)}  fallback ${s.fallback}`,
-      `phase ${w.phase}  cam z ${w.cam.zoom.toFixed(2)}  tier ${w.tier}`,
+      `phase ${w.phase}  mode ${w.mode}  cam z ${w.cam.zoom.toFixed(2)}  tier ${w.tier}`,
+      `style ${styleId}/${themeId}  aim ${aimLatched}  q ${q.tier}  layers ${q.layersBuilt}/${q.layersBuiltInFlight}`,
     ];
     ctx.font = '600 11px ui-monospace, Menlo, Consolas, monospace';
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(6, 64, 290, lines.length * 15 + 8);
+    ctx.fillRect(6, 64, 300, lines.length * 15 + 8);
     ctx.fillStyle = '#FFFFFF';
     lines.forEach((l, i) => ctx.fillText(l, 12, 78 + i * 15));
     ctx.restore();
   }
 
-  // ------------------------------------------------------------------ public
-  function resize(w, h, ratio) {
-    cssW = Math.max(1, Math.round(Number(w) || 1));
-    cssH = Math.max(1, Math.round(Number(h) || 1));
-    dpr = clamp(Number(ratio) || 1, 1, V.maxDpr);
-    canvas.width = Math.max(1, Math.round(cssW * dpr));
-    canvas.height = Math.max(1, Math.round(cssH * dpr));
+  // ------------------------------------------------------------------ size + quality
+  function applySize() {
+    const d = edpr();
+    canvas.width = Math.max(1, Math.round(cssW * d));
+    canvas.height = Math.max(1, Math.round(cssH * d));
     if (canvas.style) {
       canvas.style.width = cssW + 'px';
       canvas.style.height = cssH + 'px';
     }
   }
 
+  function resize(w, h, ratio) {
+    const nw = Math.max(1, Math.round(Number(w) || 1));
+    const nh = Math.max(1, Math.round(Number(h) || 1));
+    const nd = clamp(Number(ratio) || 1, 1, V.maxDpr);
+    if (nw !== cssW || nh !== cssH || nd !== dpr) layers.clear();
+    cssW = nw;
+    cssH = nh;
+    dpr = nd;
+    applySize();
+    quality.reset();
+  }
+
+  function setLow(on) {
+    on = !!on && style.adaptive;
+    if (on === lowQ) return;
+    lowQ = on;
+    layers.clear();
+    applySize();
+    quality.reset();
+  }
+
+  function setQuality(mode) {
+    const forced = quality.setMode(mode);
+    if (forced === true && style.adaptive) setLow(true);
+    else if (forced === false) setLow(false);
+  }
+
+  function getQuality() {
+    return {
+      mode: quality.mode,
+      tier: lowQ ? 'low' : 'high',
+      pending: quality.wantLow && !lowQ && style.adaptive,
+      median: quality.stats.median,
+      longShare: quality.stats.longShare,
+      layersBuilt: layers.stats.built,
+      layersBuiltInFlight: layers.stats.inFlight,
+      xfade: palT,
+      adaptive: !!style.adaptive,
+    };
+  }
+
+  // ------------------------------------------------------------------ frame
   function draw(alpha = 1, frameDt = 0) {
+    const adaptive = !!style.adaptive;
+    const timing = adaptive && quality.timing && !lowQ;
+    const t0 = timing ? nowMs() : 0;
+    const built0 = layers.stats.built;
     const w = game.world;
+    phaseNow = w.phase;
+    if (adaptive && quality.wantLow && !lowQ && calmPhase()) setLow(true);
     const dt = clamp(Number(frameDt) || 0, 0, 0.1);
     const a = clamp(Number(alpha), 0, 1) || 0;
+    drawFrame(w, dt, a);
+    if (timing) quality.sample(nowMs() - t0, Number(frameDt) || 0, layers.stats.built !== built0, lowQ);
+  }
+
+  function drawFrame(w, dt, a) {
     update(dt);
+    latchAim(w);
 
     if (w.tier !== curTier) {
       palFrom = currentPalette();
-      palTo = themePalette(themeId, w.tier);
+      palKeyFrom = palKeyTo;
+      palTo = basePalette(themeId, w.tier);
+      palKeyTo = palKeyOf(themeId, w.tier);
       palT = 0;
       curTier = w.tier;
     }
     const pal = currentPalette();
-
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const d = edpr();
+    ctx.setTransform(d, 0, 0, d, 0, 0);
     ctx.globalAlpha = 1;
-    drawSky(pal);
-    if (!w.shot) return;
+    if (style.adaptive) layers.touchPending(ctx);
 
     const c = w.cam;
     const zoom = lerp(c.pzoom, c.zoom, a);
     const k = (cssW / V.worldWidth) * zoom;
-    const cx = lerp(c.px, c.x, a);
-    const cy = lerp(c.py, c.y, a);
-    const T = {
-      k, cx, cy, viewW: cssW / k,
-      sx: (x) => (x - cx) * k,
-      sy: (y) => cssH - (y - cy) * k,
+    const camX = lerp(c.px, c.x, a);
+    const camY = lerp(c.py, c.y, a);
+    const gy = cssH - (0 - camY) * k;
+    const mode = w.mode === 'endless' ? 'endless' : 'field';
+    const f = {
+      cfg, time, dt, w: cssW, h: cssH, dpr, edpr: d,
+      k, camX, camY, viewW: cssW / k,
+      sx: (x) => (x - camX) * k,
+      sy: (y) => cssH - (y - camY) * k,
+      gy,
+      mode,
+      fieldEnd: null,
+      originX: Number.isFinite(w.originX) ? w.originX : 0,
+      proj: null,
+      fv: null,
+      spot: null,
+      pal,
+      palKey: palT >= 1 ? palKeyTo : palKeyFrom + '>' + palKeyTo,
+      theme: THEMES[themeId],
+      themeId,
+      styleId,
+      lowQ,
+      phase: w.phase,
+      inFlight: w.phase === 'fly' || w.phase === 'settle',
+      postX: null,
+      layers,
+      makeCanvas,
+      world: w,
+      preview: false,
     };
-    const skin = BALL_SKINS[skinId] || BALL_SKINS.classic;
-    const theme = STADIUM_THEMES[themeId] || STADIUM_THEMES.day;
+    lastFrame = f;
+    style.drawSky(ctx, f);
+    if (!w.shot) return;
+
+    const meta = ballMeta(skinId);
 
     // trail samples (world space)
     const b = w.ball;
@@ -1096,7 +805,17 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     } else if (trail.length) {
       trail.length = 0;
     }
-    spawnSkinFx(w, dt, skin);
+    spawnSkinFx(w, dt, meta);
+
+    // field view + projection (shared by every style)
+    const teeA = w.phase === 'idle' || w.phase === 'intro' || w.phase === 'aim' ? 1
+      : w.phase === 'fly' ? clamp(1 - w.flightTime / 0.4, 0, 1) : 0;
+    const endX = mode === 'field' ? (Number.isFinite(w.fieldEnd) ? w.fieldEnd : (w.post ? w.post.x : 0)) : null;
+    f.fieldEnd = endX;
+    f.spot = { x: w.teeX, alpha: teeA, color: themeId === 'arcade' ? '#FFFFFF' : '#3D8BFF' };
+    f.fv = { w: cssW, h: cssH, k, camX, gy, endX, originX: f.originX, mode, spot: f.spot, detail: 1 };
+    f.proj = fieldProjection(f.fv, cfg);
+    f.postX = w.post ? f.sx(w.post.x) : null;
 
     // screen shake
     let ox = 0;
@@ -1110,68 +829,163 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     ctx.save();
     ctx.translate(ox, oy);
 
-    // football field in broadcast perspective; theme decor stands on its far wall
-    const teeA = w.phase === 'idle' || w.phase === 'intro' || w.phase === 'aim' ? 1
-      : w.phase === 'fly' ? clamp(1 - w.flightTime / 0.4, 0, 1) : 0;
-    const endX = Number.isFinite(w.fieldEnd) ? w.fieldEnd : (w.post ? w.post.x : 0);
-    const fv = {
-      w: cssW, h: cssH, k, camX: cx, gy: T.sy(0), endX,
-      spot: { x: w.teeX, alpha: teeA, color: themeId === 'arcade' ? '#FFFFFF' : '#3D8BFF' },
-    };
-    const pr = fieldProjection(fv, cfg);
-    ctx.save();
-    theme.drawDecor(ctx, { camX: cx, camY: cy, k, w: cssW, h: cssH, groundY: pr.farY }, pal, time);
+    style.drawBackground(ctx, f);
+    ctx.globalAlpha = 1;
+    style.drawField(ctx, f);
+    ctx.globalAlpha = 1;
+
+    let post;
+    let pop = 1;
+    if (mode === 'field') {
+      post = displayPost(w, dt);
+      style.drawNet(ctx, post, f, netFx);
+    } else {
+      post = w.post;
+      pop = w.phase === 'idle' ? 1 : easeOutBack(clamp(w.shotAge / 0.42, 0, 1));
+    }
+    const oldPost = mode === 'endless' ? w.oldPost : null;
+    if (oldPost) style.drawPostShadow(ctx, oldPost, f, 1);
+    style.drawPostShadow(ctx, post, f, pop);
+    const st = ballState(w, f, a, meta);
+    style.drawBallShadow(ctx, st, f);
+    if (oldPost) style.drawPost(ctx, oldPost, 'far', f, 1);
+    style.drawPost(ctx, post, 'far', f, pop);
+    if (mode === 'field') {
+      const g = ghostState(w, f);
+      if (g) {
+        style.drawBallShadow(ctx, g, f);
+        style.drawBall(ctx, skinId, g, f);
+      }
+    }
+    style.drawTee(ctx, w.teeX, f, teeA);
+    style.drawCoin(ctx, w.pickup, f);
+    style.drawTrail(ctx, trail, skinId, f);
+    style.drawBall(ctx, skinId, st, f);
+    if (oldPost) style.drawPost(ctx, oldPost, 'near', f, 1);
+    style.drawPost(ctx, post, 'near', f, pop);
+    fxView.particles = particles;
+    fxView.rings = rings;
+    fxView.glows = glows;
+    style.drawEffects(ctx, fxView, f);
+    ctx.globalAlpha = 1;
+    style.drawFront(ctx, f);
     ctx.restore();
     ctx.globalAlpha = 1;
-    ctx.save();
-    drawField(ctx, themeId, pal, fv, time, cfg);
-    ctx.restore();
+    style.drawFinish(ctx, f);
+    ctx.globalAlpha = 1;
 
-    const post = displayPost(w, dt);
-    drawNet(post, pal, T);
-    drawPost(post, 'far', pal, T);
-    drawGhostBall(w, T);
-    drawTee(w.teeX, pal, T, teeA);
-    drawCoin(w.pickup, T);
-    drawTrail(T, skin);
-    const ballScreen = drawBallAndShadow(w, T, a, skin);
-    drawPost(post, 'near', pal, T);
-    drawParticles(T);
-    drawRings(T);
-    ctx.restore();
-
-    drawSwoopStreaks(w, T, pal);
-    // attempt labels: banner while swooping to a fresh attempt, tee pill while aiming
-    if (w.shot !== lastShot) {
+    // screen-space overlays
+    if (mode === 'field') {
+      drawSwoopStreaks(w, f);
+      if (w.shot !== lastShot) {
+        lastShot = w.shot;
+        bannerT = 0;
+        bannerOn = !!w.swoop;
+      } else if (dt > 0) {
+        bannerT += dt;
+      }
+      const labelA = w.phase === 'aim' ? 1
+        : w.phase === 'intro' && !w.swoop ? easeInOut(clamp(w.introT / cfg.timing.introTime, 0, 1))
+          : w.phase === 'fly' ? clamp(1 - w.flightTime / 0.25, 0, 1) : 0;
+      drawTeeLabel(w, f, labelA);
+    } else {
       lastShot = w.shot;
-      bannerT = 0;
-      bannerOn = !!w.swoop;
-    } else if (dt > 0) {
-      bannerT += dt;
+      bannerOn = false;
     }
-    const labelA = w.phase === 'aim' ? 1
-      : w.phase === 'intro' && !w.swoop ? easeInOut(clamp(w.introT / cfg.timing.introTime, 0, 1))
-        : w.phase === 'fly' ? clamp(1 - w.flightTime / 0.25, 0, 1) : 0;
-    drawTeeLabel(w, T, labelA, pal);
-    drawAim(w, { x: ballScreen.x, y: ballScreen.y }, a, pal, T, skin);
-    drawAttemptBanner(w, pal);
+    if (wipeT < WIPE_TIME) {
+      const u = clamp(wipeT / WIPE_TIME, 0, 1);
+      ctx.fillStyle = withAlpha(pal.skyTop, 1 - easeOutCubic(u));
+      ctx.fillRect(0, 0, cssW, cssH);
+    }
+    drawAim(w, { x: st.X, y: st.Y }, a, pal, f, meta);
+    if (mode === 'field') drawAttemptBanner(w, pal);
 
     if (flash > 0.001) {
       ctx.fillStyle = withAlpha(flashColor, flash);
       ctx.fillRect(0, 0, cssW, cssH);
     }
-    if (debug) drawDebug(w, T);
+    if (debug) drawDebug(w, f);
+    if (style.adaptive) prewarm(dt);
+  }
+  const fxView = { particles, rings, glows };
+
+  function prewarm(dt) {
+    const nextTier = curTier + 1;
+    const pkN = palKeyOf(themeId, nextTier);
+    const jobs = [[palKeyTo, palTo]];
+    const pkW = warmTier > 0 && phaseNow === 'idle' ? palKeyOf(themeId, warmTier) : palKeyTo;
+    if (pkW !== palKeyTo) jobs.push([pkW, basePalette(themeId, warmTier)]);
+    if (palT >= 1 && pkN !== palKeyTo && pkN !== pkW) jobs.push([pkN, basePalette(themeId, nextTier)]);
+    layers.prewarm(dt, jobs);
   }
 
+  // ------------------------------------------------------------------ public setters
   function setSkin(id) {
-    skinId = BALL_SKINS[id] ? id : 'classic';
+    skinId = ballMeta(id).id === id ? id : 'classic';
   }
 
-  function setTheme(id) {
-    themeId = STADIUM_THEMES[id] ? id : 'day';
-    curTier = game.world ? game.world.tier : 0;
-    palFrom = palTo = themePalette(themeId, curTier);
+  function snapTier(t) {
+    curTier = Math.floor(Number(t) || 0);
+    palFrom = palTo = basePalette(themeId, curTier);
+    palKeyFrom = palKeyTo = palKeyOf(themeId, curTier);
     palT = 1;
+  }
+
+  function applyStyle(nextStyle, nextTheme) {
+    const changed = nextStyle !== styleId || nextTheme !== themeId;
+    styleId = nextStyle;
+    themeId = nextTheme;
+    style = getStyle(styleId);
+    if (changed) {
+      layers.clear();
+      quality.reset();
+      if (!style.adaptive) {
+        quality.clearWant();
+        setLow(false); // retro always runs at full dpr
+      } else if (quality.mode === 'low') {
+        setLow(true);
+      }
+    }
+    snapTier(game.world ? game.world.tier : 0);
+  }
+
+  /** Catalog stadium id ('day', 'pro_night', ...) or base theme id; unknown -> retro day. */
+  function setTheme(id) {
+    const info = stadiumInfo(id, cfg);
+    stadiumId = info.id;
+    applyStyle(styleOverride || info.style, info.theme);
+  }
+
+  /** QA only (?style=): render the equipped theme in another style without owning it. */
+  function setStyleOverride(sid) {
+    styleOverride = sid === 'retro' || sid === 'pro' ? sid : null;
+    setTheme(stadiumId);
+  }
+
+  /** 'full' | 'fade' | 'off' for the next shot (latched when it appears; §6.3). */
+  function setAimAssist(mode) {
+    aimPending = AIM_MODES.has(mode) ? mode : 'off';
+    const w = game.world;
+    if (w && (w.phase === 'idle' || w.phase === 'over' || !w.shot)) aimLatched = aimPending;
+  }
+
+  function setWarmTier(t) {
+    warmTier = Math.max(0, Math.floor(Number(t) || 0));
+  }
+
+  function debugState() {
+    return {
+      style: styleId,
+      theme: themeId,
+      stadium: stadiumId,
+      mode: game.world ? game.world.mode : 'field',
+      aimAssist: aimLatched,
+      aimPending,
+      railAlpha: lastRailAlpha,
+      dotsAlpha: lastDotsAlpha,
+      quality: getQuality(),
+      wipe: wipeT < WIPE_TIME,
+    };
   }
 
   function destroy() {
@@ -1181,11 +995,26 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     unsubs.length = 0;
     particles.length = 0;
     rings.length = 0;
+    glows.length = 0;
     trail.length = 0;
+    layers.clear();
   }
 
   resize(cssW, cssH, 1);
-  return { resize, draw, setSkin, setTheme, destroy };
+  return {
+    resize,
+    draw,
+    setSkin,
+    setTheme,
+    setStyleOverride,
+    setAimAssist,
+    get aimAssist() { return aimLatched; },
+    setQuality,
+    getQuality,
+    setWarmTier,
+    debugState,
+    destroy,
+  };
 }
 
 export default createRenderer;

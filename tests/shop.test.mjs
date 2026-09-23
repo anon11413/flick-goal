@@ -209,3 +209,71 @@ test('rewarded-coin cooldown also recovers from a future timestamp', () => {
   clock.t += CONFIG.economy.rewardedCoinsCooldownMs;
   assert.equal(shop.rewardedCoinsStatus().ready, true);
 });
+
+// ---------------------------------------------------------------- v2: stadium styles + upgrades
+test('stadium rows carry style + theme; PRO prices are config-driven and above their retro twin', () => {
+  const { shop } = setup();
+  const rows = shop.items('stadium');
+  const retro = rows.filter((r) => r.style === 'retro');
+  const pro = rows.filter((r) => r.style === 'pro');
+  assert.equal(retro.length, 5);
+  assert.equal(pro.length, 5);
+  for (const r of rows) {
+    const cat = CONFIG.catalog.stadiums.find((s) => s.id === r.id);
+    assert.equal(r.theme, cat.theme);
+    assert.equal(r.price, cat.price);
+  }
+  assert.equal(rows.find((r) => r.id === 'day').price, 0, 'retro Day Game is free');
+  for (const p of pro) {
+    const twin = retro.find((r) => r.theme === p.theme);
+    assert.ok(p.price > twin.price, p.id);
+  }
+  assert.ok(Math.min(...pro.map((p) => p.price)) <= 500, 'one inexpensive PRO stadium as a hook');
+});
+
+test('a PRO stadium can be bought and equipped like any other', () => {
+  const { shop, save } = setup({ coins: 5000 });
+  assert.equal(shop.buy('stadium', 'pro_day').ok, true);
+  assert.equal(shop.equip('stadium', 'pro_day').ok, true);
+  assert.equal(save.data.equipped.stadium, 'pro_day');
+  assert.equal(shop.coins(), 5000 - price('stadium', 'pro_day'));
+});
+
+test('upgrade: Aim Slider costs 10,000 (config); insufficient / success / owned', () => {
+  const up = CONFIG.catalog.upgrades.find((u) => u.id === 'aim_slider');
+  assert.equal(up.price, 10000);
+  const { shop, save } = setup({ coins: 9999 });
+  assert.deepEqual(shop.items('upgrade'), [{ id: 'aim_slider', name: 'Aim Slider', price: 10000, owned: false, active: false }]);
+  assert.equal(shop.upgradeActive('aim_slider'), false);
+  assert.deepEqual(shop.buy('upgrade', 'aim_slider'), { ok: false, reason: 'insufficient', need: 1 });
+  const events = [];
+  shop.on((e) => events.push(e.type));
+  assert.equal(shop.addCoins(10000, 'dev'), true, "'dev' is an accepted coin source");
+  save.update((d) => { d.settings.aimSlider = false; });
+  assert.deepEqual(shop.buy('upgrade', 'aim_slider'), { ok: true });
+  assert.equal(shop.coins(), 9999);
+  assert.deepEqual(save.data.owned.upgrades, ['aim_slider']);
+  assert.equal(save.data.settings.aimSlider, true, 'a fresh purchase starts ON');
+  assert.equal(shop.upgradeActive('aim_slider'), true);
+  assert.deepEqual(events.slice(-3), ['coins', 'owned', 'upgrade']);
+  assert.deepEqual(shop.buy('upgrade', 'aim_slider'), { ok: false, reason: 'owned' });
+  assert.equal(shop.equip('upgrade', 'aim_slider').ok, false, 'upgrades are never equipped');
+  assert.equal(shop.equipped('upgrade'), null);
+});
+
+test('upgrade: setUpgradeActive only works when owned and persists the setting', () => {
+  const { shop, save } = setup({ coins: 20000 });
+  assert.equal(shop.setUpgradeActive('aim_slider', true), false, 'not owned');
+  assert.equal(save.data.settings.aimSlider, true);
+  shop.buy('upgrade', 'aim_slider');
+  const events = [];
+  shop.on((e) => events.push(e));
+  assert.equal(shop.setUpgradeActive('aim_slider', false), true);
+  assert.equal(shop.upgradeActive('aim_slider'), false);
+  assert.equal(save.data.settings.aimSlider, false);
+  assert.deepEqual(events.map((e) => [e.type, e.active]), [['upgrade', false]]);
+  assert.equal(shop.items('upgrade')[0].active, false);
+  shop.setUpgradeActive('aim_slider', true);
+  assert.equal(shop.upgradeActive('aim_slider'), true);
+  assert.equal(shop.setUpgradeActive('nope', true), false);
+});

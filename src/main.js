@@ -18,6 +18,8 @@ import { createStore } from './ui/store.js';
 import { createRouter, createMenu, createPaused, createGameOver, createSettings } from './ui/screens.js';
 import { createDevState, isDevRun, nextBest } from './dev.js';
 import { createDevPanel } from './ui/devPanel.js';
+import { sliderMode, hintFor, describeAim, AIM_SLIDER_ID } from './aimAssist.js';
+import { isMode, normalizeMode, otherMode, calloutVisible, nextCalloutState, newBadgeVisible } from './modes.js';
 
 const STEP = 1 / CONFIG.sim.hz;
 const params = new URLSearchParams(location.search);
@@ -52,8 +54,17 @@ const mon = createMonetization({ cfg: monCfg, shop, root: overlay });
 const dialogs = createDialogs({ root: overlay, onClick: () => haptics.pulse('tap') });
 const fx = createFx({ layer: fxLayer, stage });
 
+// QA: ?mode=field|endless sets the saved mode at boot.
+if (isMode(params.get('mode'))) save.update((d) => { d.mode = params.get('mode'); });
+
 const game = createGame({ cfg: CONFIG });
 const renderer = createRenderer(canvas, game, { cfg: CONFIG, debug });
+// QA / debug only: ?style=retro|pro renders the equipped theme in that art style (not saved).
+if (params.get('style') === 'retro' || params.get('style') === 'pro') renderer.setStyleOverride(params.get('style'));
+// Graphics quality (adaptive pro styles): ?gfx=high|low forces a tier, else the developer override.
+const gfxParam = params.get('gfx') === 'high' || params.get('gfx') === 'low' ? params.get('gfx') : null;
+const applyGfx = () => renderer.setQuality(gfxParam || dev.gfx());
+applyGfx();
 
 const sfx = (name) => audio.play(name);
 const haptic = (name) => haptics.pulse(name);
@@ -152,11 +163,58 @@ function luminance(hex) {
 // Run bookkeeping
 // ---------------------------------------------------------------------------
 const runCoins = createRunCoins(); // 2x offer only ever doubles coins not doubled yet (survives Continue)
-let run = { bestAtRunStart: 0, result: null };
-let showHintThisRun = false;
-// With the rail hidden the aim cue is new even to veterans: teach the guide once per page load.
-let guideHintShown = false;
+let run = { bestAtRunStart: 0, bestYardsAtRunStart: 0, result: null };
 let storeReturn = 'menu';
+let calloutThisVisit = false; // the one-time Endless callout is showing on this menu visit
+
+// ---------------------------------------------------------------------------
+// Aim slider: tutorial (kicks 1-2) + Aim Slider upgrade + developer force (src/aimAssist.js).
+// The mode for the NEXT shot is recomputed whenever an input changes; the renderer latches it
+// when that shot appears, so the kick in flight never changes its slider.
+// ---------------------------------------------------------------------------
+let aim = { mode: 'full', reason: 'tutorial' };
+const aimSliderOwned = () => shop.isOwned('upgrade', AIM_SLIDER_ID);
+function computeAim() {
+  aim = sliderMode({
+    devForce: dev.sliderForce(),
+    owned: aimSliderOwned(),
+    on: save.data.settings.aimSlider !== false,
+    kicks: save.data.tutorial.kicks,
+  });
+  renderer.setAimAssist(aim.mode);
+  return aim;
+}
+
+// ---------------------------------------------------------------------------
+// Game mode (FIELD GOAL / ENDLESS): saved choice, switched from the menu chip without a run.
+// ---------------------------------------------------------------------------
+const currentMode = () => normalizeMode(save.data.mode);
+function applyUiPatch(event) {
+  const patch = nextCalloutState(save.data, event);
+  if (patch) save.update((d) => { Object.assign(d.ui, patch); });
+}
+/** Switch mode between runs (menu chip, callout, developer panel). Never starts a run. */
+function setMode(m, { quiet = false } = {}) {
+  const mode = normalizeMode(m);
+  const changed = mode !== save.data.mode;
+  save.update((d) => {
+    d.mode = mode;
+    const patch = nextCalloutState(d, 'switch');
+    if (patch) Object.assign(d.ui, patch);
+  });
+  calloutThisVisit = false;
+  if (changed || game.mode !== mode) {
+    if (game.phase === 'idle' || game.phase === 'over' || router.current !== 'playing') game.idle({ mode });
+    tier = 0;
+    applyThemeChrome();
+  }
+  if (!quiet) {
+    sfx('whoosh');
+    haptic('tap');
+  }
+  if (router && router.current === 'menu') menu.refresh();
+  return mode;
+}
 let flowBusy = false; // guards async button flows (ads / interstitials)
 
 // ---------------------------------------------------------------------------
@@ -206,6 +264,49 @@ const app = {
   restorePurchases,
   resetProgress,
 
+  // modes (menu chip)
+  currentMode,
+  bestFor: (m) => (save.data.best && save.data.best[normalizeMode(m)]) | 0,
+  toggleMode: () => setMode(otherMode(currentMode())),
+  setMode: (m) => setMode(m),
+  newBadgeVisible: () => newBadgeVisible(save.data),
+  calloutVisible: () => calloutThisVisit && !save.data.ui.calloutDone && !save.data.ui.endlessTried,
+  onMenuEnter() {
+    calloutThisVisit = calloutVisible(save.data);
+    if (calloutThisVisit) applyUiPatch('menuVisit');
+  },
+
+  // Aim Slider upgrade
+  aimSliderOwned,
+  isAimSliderOn: () => shop.upgradeActive(AIM_SLIDER_ID),
+  setAimSlider(v) {
+    shop.setUpgradeActive(AIM_SLIDER_ID, !!v);
+    computeAim();
+  },
+  onUpgradeChange() {
+    computeAim();
+    settings.refresh();
+  },
+
+  // developer panel
+  devAddCoins(btn) {
+    if (!shop.addCoins(10000, 'dev')) return;
+    sfx('gift');
+    haptic('buy');
+    if (btn && btn.isConnected) fx.confettiAt(btn, 24, 0.8);
+    dialogs.toast('+10,000 coins', { kind: 'ok', ms: 1200 });
+  },
+  devResetTutorial() {
+    save.update((d) => {
+      d.tutorial.kicks = 0;
+      d.ui = { endlessTried: false, calloutShows: 0, calloutDone: false };
+    });
+    computeAim();
+    sfx('click');
+    dialogs.toast('Tutorial reset: next kick shows the slider', { kind: 'info' });
+  },
+  aimReadout: () => `Tutorial kicks: ${save.data.tutorial.kicks} · next kick: ${describeAim(aim)}`,
+
   openStore(tab) {
     if (router.current !== 'store') storeReturn = router.current === 'gameover' ? 'gameover' : 'menu';
     sfx('whoosh');
@@ -244,6 +345,11 @@ router = createRouter({
   screens: { menu, hud, paused, gameover, store, settings },
 });
 createDevPanel({ app, dev, game, router, screens: { menu, hud, gameover, settings } });
+// Pre-warm a dev start round's palette-tier layers on the menu (adaptive styles) and follow the
+// developer slider / graphics overrides.
+const warmDevTier = () => renderer.setWarmTier(Math.floor(dev.startMade() / CONFIG.scoring.tierEvery));
+warmDevTier();
+dev.onChange(() => { warmDevTier(); applyGfx(); computeAim(); });
 let routeAt = performance.now();
 router.onChange(() => { routeAt = performance.now(); });
 /** ms since the current route was shown (input grace periods). */
@@ -258,7 +364,7 @@ function startRun() {
   if (flowBusy) return;
   sfx('whoosh');
   haptic('tap');
-  game.newRun({ startMade: dev.startMade() });
+  game.newRun({ startMade: dev.startMade(), mode: currentMode() });
   router.show('playing');
 }
 
@@ -273,14 +379,18 @@ function resume() {
   router.show('playing');
 }
 
-function recordBest(score) {
-  if (isDevRun(game.hud())) return; // dev start-round runs never touch Best
-  if (score > save.data.best) save.update((d) => { d.best = score; });
+function recordBest(hudState) {
+  if (isDevRun(hudState)) return; // dev start-round runs never touch Best
+  const m = normalizeMode(hudState.mode);
+  save.update((d) => {
+    if (hudState.score > d.best[m]) d.best[m] = hudState.score;
+    if (m === 'endless' && (hudState.yards | 0) > d.bestYards) d.bestYards = hudState.yards | 0;
+  });
 }
 
 function quitToMenu() {
   if (router.current !== 'paused') return;
-  recordBest(game.hud().score);
+  recordBest(game.hud());
   game.idle();
   tier = 0;
   applyThemeChrome();
@@ -430,6 +540,8 @@ async function resetProgress() {
   haptics.setEnabled(save.data.settings.haptics);
   renderer.setSkin(CONFIG.defaults.ball);
   renderer.setTheme(CONFIG.defaults.stadium);
+  computeAim();
+  settings.refresh();
   tier = 0;
   applyThemeChrome();
   wallet.refresh();
@@ -441,28 +553,42 @@ async function resetProgress() {
 // ---------------------------------------------------------------------------
 // Engine events -> feedback, economy, screens
 // ---------------------------------------------------------------------------
-game.on('runStart', () => {
-  run = { bestAtRunStart: save.data.best, result: null };
+game.on('runStart', (e) => {
+  const mode = normalizeMode(e && e.mode);
+  run = { bestAtRunStart: app.bestFor(mode), bestYardsAtRunStart: save.data.bestYards | 0, result: null };
   runCoins.reset();
   save.update((d) => { d.stats.gamesPlayed += 1; });
-  showHintThisRun = save.data.stats.totalGoals < 3 || (!CONFIG.rail.visible && !guideHintShown);
+  if (mode === 'endless') applyUiPatch('endlessRun');
   hud.reset();
+  hud.setMode(mode);
+  computeAim();
   tier = 0;
   applyThemeChrome();
 });
 
 game.on('shotStart', (e) => {
-  // First shot of a normal run only. A dev start-round run begins at made > 0 (like a natural
-  // run at that point), so it neither shows nor uses up the once-per-load guide hint.
-  const show = showHintThisRun && e.made === 0;
-  if (show) guideHintShown = true;
-  hud.showHint(show);
+  // Aim hints: slider tutorial (kick 1 rail, kick 2 fade), first slider-less kick, first shot of a
+  // run for newer players (V2_SPEC §6.4). A dev start-round run's first shot is made === startMade.
+  hud.showHint(hintFor({
+    mode: aim.mode,
+    reason: aim.reason,
+    kicks: save.data.tutorial.kicks,
+    made: e.made,
+    startMade: game.hud().startMade,
+    totalGoals: save.data.stats.totalGoals,
+    cfg: CONFIG,
+  }));
 });
 
 game.on('flick', () => {
-  hud.showHint(false);
+  hud.showHint(null);
   sfx('flick');
   haptic('flick');
+  // Tutorial progress counts real kicks (not timeouts), shared by both modes; dev runs don't count.
+  if (!isDevRun(game.hud())) {
+    save.update((d) => { d.tutorial.kicks = Math.min(999, (d.tutorial.kicks | 0) + 1); });
+  }
+  computeAim();
 });
 
 game.on('bounce', (e) => {
@@ -511,14 +637,18 @@ game.on('clockLow', () => {
 game.on('miss', () => {
   sfx('fail');
   haptic('fail');
-  hud.showHint(false);
+  hud.showHint(null);
 });
 
 game.on('gameover', (e) => {
   const devRun = isDevRun(e); // dev start-round run: no Best update, no NEW BEST
+  const mode = normalizeMode(e.mode);
   const newBest = !devRun && e.score > run.bestAtRunStart && e.score > 0;
+  const yards = mode === 'endless' ? e.yards | 0 : 0;
+  const farthest = !devRun && mode === 'endless' && yards > 0 && yards > run.bestYardsAtRunStart;
   save.update((d) => {
-    d.best = nextBest(d.best, e);
+    d.best[mode] = nextBest(d.best[mode], e);
+    if (!devRun && yards > d.bestYards) d.bestYards = yards;
     d.stats.bestStreak = Math.max(d.stats.bestStreak, e.bestStreak | 0);
   });
   runCoins.setEarned(e.coinsRun | 0);
@@ -529,9 +659,12 @@ game.on('gameover', (e) => {
     coinsRun: e.coinsRun | 0,
     reason: e.reason,
     canContinue: !!e.canContinue,
-    best: save.data.best,
+    best: save.data.best[mode],
     newBest,
     startMade: e.startMade | 0,
+    mode,
+    yards,
+    farthest,
   };
   if (router.current === 'playing' || router.current === 'paused') {
     router.show('gameover', { fresh: true });
@@ -717,10 +850,14 @@ save.onExternalChange(() => {
   haptics.setEnabled(save.data.settings.haptics);
   renderer.setSkin(save.data.equipped.ball);
   renderer.setTheme(save.data.equipped.stadium);
+  computeAim();
   applyThemeChrome();
   wallet.refresh();
-  if (router.current === 'menu') menu.refresh();
-  else if (router.current === 'store' && store.refresh) store.refresh();
+  if (router.current === 'menu') {
+    if (game.mode !== currentMode()) game.idle({ mode: currentMode() });
+    menu.refresh();
+  } else if (router.current === 'store' && store.refresh) store.refresh();
+  else if (router.current === 'settings') settings.refresh();
 });
 
 function boot() {
@@ -728,7 +865,8 @@ function boot() {
   renderer.setSkin(save.data.equipped.ball);
   renderer.setTheme(save.data.equipped.stadium);
   applyThemeChrome();
-  game.idle();
+  game.idle({ mode: currentMode() });
+  computeAim();
   router.show('menu');
   lastFrame = performance.now();
   requestAnimationFrame(frame);
@@ -737,7 +875,11 @@ function boot() {
   setTimeout(() => { const b = $('#boot'); if (b) b.remove(); }, 600); // after the fade-out
   if (!save.persisted) console.info('Flick Goal: storage unavailable — progress will not be saved this session.');
   if (qa) {
-    window.__fg = { game, shop, save, mon, router, renderer, audio, CONFIG, fmtNum, dev };
+    window.__fg = {
+      game, shop, save, mon, router, renderer, audio, CONFIG, fmtNum, dev, hud, app,
+      get aim() { return { ...aim }; },
+      debugState: () => renderer.debugState(),
+    };
   }
 }
 

@@ -4,6 +4,7 @@
 import { h, setText, fmtNum, fmtTime, replayClass, centerIn } from './dom.js';
 import { icon } from './icons.js';
 import { createCoinPill } from './hud.js';
+import { MODES, otherMode } from '../modes.js';
 
 // Which sections are visible for each route (paused overlays the HUD).
 const ROUTES = {
@@ -96,20 +97,82 @@ function roundBtn(name, label, onclick, extraCls = '') {
   });
 }
 
-function toggleRow(label, iconName, getValue, onToggle) {
+function toggleRow(label, iconName, getValue, onToggle, subLabel = null) {
   const knob = h('span.switch', h('i'));
+  const sub = subLabel ? h('small.set-sub', '') : null;
   const row = h('button.set-row', {
     type: 'button',
-    attrs: { role: 'switch' },
+    attrs: { role: 'switch', 'aria-label': label },
     onclick: () => { onToggle(!getValue()); sync(); },
-  }, h('span.set-ic', { html: icon(iconName) }), h('span.set-label', label), knob);
+  }, h('span.set-ic', { html: icon(iconName) }), h('span.set-label', h('span', label), sub), knob);
   function sync() {
     const v = !!getValue();
     row.setAttribute('aria-checked', v ? 'true' : 'false');
     row.classList.toggle('on', v);
+    if (sub) setText(sub, subLabel(v));
   }
   sync();
   return { el: row, sync };
+}
+
+const REDUCED_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * Menu mode chip (V2_SPEC §9.1): shows the current mode, tapping it switches mode (bouncy
+ * animation) WITHOUT starting a run. A red NEW badge shows until Endless was tried, and a one-time
+ * gold callout above it invites returning players. Lives inside [data-no-tap] so the menu's
+ * tap-to-play never sees these taps.
+ */
+function createModeChip(app) {
+  const ic = h('span.mode-ic');
+  const labels = h('span.mode-labels');
+  const badge = h('span.mode-new', 'NEW');
+  const chip = h('button.mode-chip', { type: 'button', onclick: () => doSwitch() },
+    ic, labels, h('span.mode-swap', { html: icon('swap') }), badge);
+  const callout = h('button.mode-callout', { type: 'button', onclick: () => doSwitch() },
+    h('span.mode-callout-new', 'NEW:'), ' Endless mode! Tap to switch');
+  callout.hidden = true;
+  const el = h('div.mode-wrap', { dataset: { noTap: '' } }, callout, chip);
+  let current = null;
+  let busyT = 0;
+
+  function paint(mode, animate) {
+    const m = MODES[mode] || MODES.field;
+    ic.innerHTML = icon(m.icon);
+    ic.className = 'mode-ic ' + m.id;
+    chip.dataset.mode = m.id;
+    const next = MODES[otherMode(m.id)];
+    chip.setAttribute('aria-label', `Game mode: ${m.short}. Tap to switch to ${next.short}.`);
+    const lab = h('span.mode-label', m.label);
+    if (animate && !REDUCED_MOTION && labels.firstChild) {
+      const old = Array.from(labels.children);
+      for (const o of old) { o.classList.add('out'); setTimeout(() => o.remove(), 320); }
+      lab.classList.add('in');
+      labels.appendChild(lab);
+      replayClass(chip, 'switching', 340);
+    } else {
+      labels.replaceChildren(lab);
+    }
+    current = m.id;
+  }
+
+  function doSwitch() {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (now - busyT < 250) return; // double taps don't flip twice
+    busyT = now;
+    const mode = app.toggleMode();
+    paint(mode, true);
+    refresh();
+  }
+
+  function refresh() {
+    const mode = app.currentMode();
+    if (mode !== current) paint(mode, false);
+    badge.hidden = !app.newBadgeVisible();
+    callout.hidden = !app.calloutVisible();
+  }
+
+  return { el, chip, callout, refresh };
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +185,7 @@ export function createMenu(app) {
   app.wallet.register('menu', pill);
 
   const best = h('span.best-num', '0');
+  const modeChip = createModeChip(app);
   const playBtn = h('button.btn.play-big', {
     type: 'button', html: icon('play'), attrs: { 'aria-label': 'Play' },
     onclick: () => app.startRun(),
@@ -146,6 +210,7 @@ export function createMenu(app) {
     h('div.menu-main',
       pop(h('div.logo', h('div.logo-bob', h('span.logo-l1', 'FLICK'), h('span.logo-l2', 'GOAL'))), 1),
       pop(h('div.best', h('span.best-ic', { html: icon('crown') }), h('span', 'BEST'), best), 2),
+      pop(modeChip.el, 2),
       pop(h('div.play-wrap', playBtn), 3),
       pop(h('div.tap-to-play', h('span', 'TAP TO PLAY')), 4)),
     pop(h('div.menu-row', { dataset: { noTap: '' } },
@@ -169,7 +234,8 @@ export function createMenu(app) {
   }
 
   function refresh() {
-    setText(best, fmtNum(app.save.data.best));
+    setText(best, fmtNum(app.bestFor(app.currentMode())));
+    modeChip.refresh();
     pill.set(app.wallet.displayed());
     soundBtn.innerHTML = icon(app.isSoundOn() ? 'soundOn' : 'soundOff');
     if (noAdsBtn) noAdsBtn.parentElement.hidden = shop.hasNoAds();
@@ -180,7 +246,11 @@ export function createMenu(app) {
   return {
     el,
     pill,
-    enter() { refresh(); },
+    modeChip,
+    enter() {
+      if (app.onMenuEnter) app.onMenuEnter();
+      refresh();
+    },
     tick(now) {
       if (now - lastTick > 250) { lastTick = now; updateGift(false); }
     },
@@ -230,10 +300,18 @@ export function createGameOver(app) {
   const bestNum = h('span', '0');
   const coinsNum = h('span', '+0');
   const coinsRow = h('div.go-coins', h('span.coin-ic', { html: icon('coin') }), coinsNum);
+  const modeIc = h('span.go-mode-ic');
+  const modeLabel = h('span', 'FIELD GOAL');
+  const modeTag = h('div.go-mode', modeIc, modeLabel);
+  const distNum = h('span.go-dist-num', '0');
+  const farChip = h('span.go-far', 'FARTHEST!');
+  const distRow = h('div.go-dist', h('span.go-dist-ic', { html: icon('flag') }), distNum, h('span', 'YDS'), farChip);
   const card = h('div.go-card',
+    modeTag,
     h('div.go-label', 'SCORE'),
     scoreNum,
     h('div.go-best', h('span.best-ic', { html: icon('crown') }), 'BEST ', bestNum),
+    distRow,
     coinsRow);
 
   const continueBtn = h('button.btn.pill.green.go-continue', { type: 'button', onclick: () => app.continueRun() },
@@ -286,6 +364,14 @@ export function createGameOver(app) {
     if (animate) countUp(r.score); else setText(scoreNum, r.score);
     setText(bestNum, fmtNum(r.best));
     card.classList.toggle('is-best', !!r.newBest);
+    const m = MODES[r.mode] || MODES.field;
+    modeIc.innerHTML = icon(m.icon);
+    modeIc.className = 'go-mode-ic ' + m.id;
+    setText(modeLabel, m.label);
+    card.dataset.mode = m.id;
+    distRow.hidden = m.id !== 'endless';
+    setText(distNum, fmtNum(r.yards | 0));
+    farChip.hidden = !r.farthest;
     const total = r.coinsTotal != null ? r.coinsTotal : r.coinsRun;
     setText(coinsNum, '+' + fmtNum(total));
     coinsRow.hidden = total <= 0;
@@ -330,6 +416,10 @@ export function createSettings(app) {
   const haptics = app.hapticsSupported
     ? toggleRow('Vibration', 'vibrate', () => app.isHapticsOn(), (v) => app.setHaptics(v))
     : null;
+  // Aim Slider upgrade switch: only shown once the upgrade is owned (bought in the store).
+  const aimSlider = toggleRow('Aim slider', 'slider', () => app.isAimSliderOn(), (v) => app.setAimSlider(v),
+    (on) => (on ? 'On: slider every kick' : 'Off: aim with the dots'));
+  aimSlider.el.classList.add('aim-row');
   const restore = mon.enabled
     ? h('button.set-row.action', { type: 'button', onclick: () => app.restorePurchases() },
       h('span.set-ic', { html: icon('restore') }), h('span.set-label', 'Restore Purchases'), h('span.set-chev', { html: icon('back') }))
@@ -343,15 +433,22 @@ export function createSettings(app) {
       h('div.store-title', 'SETTINGS'),
       h('div.topbar-spacer')),
     h('div.settings-body',
-      pop(h('div.set-card', sound.el, haptics ? haptics.el : null), 0),
+      pop(h('div.set-card', sound.el, haptics ? haptics.el : null, aimSlider.el), 0),
       restore ? pop(h('div.set-card', restore), 1) : null,
       pop(h('div.set-card', reset), 2),
       pop(h('div.set-about',
         h('div.set-logo', 'FLICK GOAL'),
         h('div.version', app.qa ? `v${cfg.version} · ads: ${mon.mode}` : `v${cfg.version}`)), 3)));
 
+  function syncAll() {
+    sound.sync();
+    if (haptics) haptics.sync();
+    aimSlider.el.hidden = !app.aimSliderOwned();
+    aimSlider.sync();
+  }
   return {
     el,
-    enter() { sound.sync(); if (haptics) haptics.sync(); },
+    enter() { syncAll(); },
+    refresh: syncAll,
   };
 }

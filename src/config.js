@@ -15,7 +15,7 @@ function deepFreeze(o) {
 }
 
 export const CONFIG = deepFreeze({
-  version: '1.0.0',
+  version: '2.0.0',
   debug: false, // main.js also enables debug with ?debug=1
 
   // ---- Fixed-timestep simulation (main.js owns requestAnimationFrame) ----
@@ -41,12 +41,12 @@ export const CONFIG = deepFreeze({
     slackBelow: 0.62,      // share of spare vertical space placed below the ground: centres tee + post mid-screen
   },
 
-  // ---- Aim rail (screen space, css px; drawn by render.js, anchored to the ball) ----
+  // ---- Aim rail (screen space, css px; drawn by engine/aimDraw.js, anchored to the ball) ----
   // The rail position t always ping-pongs on [0,1] in the engine (it drives angle + power,
-  // see `mapping`). `visible: false` hides the whole track (sweet band, perfect strip, edge
-  // brackets, needle): the launch-angle guide dots from the ball are then the only aim cue.
+  // see `mapping`). Whether the track (sweet band, edge brackets, needle) is drawn is decided
+  // per shot by the aim-assist mode (src/aimAssist.js: slider tutorial + Aim Slider upgrade);
+  // the launch-angle guide dots from the ball are always drawn.
   rail: {
-    visible: false,        // false = no track/band/needle drawn; guide dots only
     offsetX: 34,           // rail start = ball screen pos + (offsetX, offsetY); sits right of the ball so the
     offsetY: 6,            // launch-angle dots (drawn from the ball) never sit under the track
     angleDeg: 36,          // up-right; t=0 at start (low/short), t=1 at end (high/long)
@@ -126,7 +126,7 @@ export const CONFIG = deepFreeze({
     distance: { start: 230, asym: 400, scale: 18, jitter: 30 }, // tee -> post, u
     gap:      { start: 165, asym: 120, scale: 22 },     // upright length above bar, u
     barHeight: { min: 50, range: 150, rampShots: 15 },  // bar in [min, min + range*min(1,n/ramp)]
-    bandAlpha: { start: 0.95, asym: 0.45, scale: 30 },  // sweet-band fill opacity when rail.visible (edges are always drawn)
+    bandAlpha: { start: 0.95, asym: 0.45, scale: 30 },  // sweet-band fill opacity when the slider is shown (edges are always drawn)
     reaction: 0.12,        // tau_r
     dwellMin: 0.09,        // D_min, seconds (hard)
     clockMargin: 0.15,     // added to per-shot worst-case clock bound
@@ -159,6 +159,33 @@ export const CONFIG = deepFreeze({
     clockLowFrac: 0.25,    // 'clockLow' event threshold
     swoopTime: 0.5,        // camera swoop to a fresh attempt (after a goal / continue / play again), before introTime
   },
+
+  // ---- Aim slider: tutorial + Aim Slider upgrade (src/aimAssist.js, V2_SPEC §6) ----
+  aim: {
+    fadeDelay: 0.3,        // kick 2 (tutorial): slider fully visible this long after aiming starts (s)
+    fadeTime: 1.1,         // ...then fades to 0 over this (s)  => gone ~1.4 s into the aim
+    tutorialKicks: 2,      // kicks 1-2 ever are the slider tutorial (1 = full slider, 2 = fading slider)
+    dotsHintUntilKick: 6,  // "evenly spaced" dots hint on the first shot of a run while kicks < this
+  },
+
+  // ---- Game modes (V2_SPEC §4, §9.1) ----
+  modes: {
+    default: 'field',      // 'field' (FIELD GOAL: fresh attempts on the end line) | 'endless' (chained kicks)
+    calloutMinGames: 3,    // the one-time "NEW: Endless mode!" callout shows for players with >= this many games
+    calloutMaxShows: 3,    // ...on at most this many menu visits
+  },
+
+  // ---- ENDLESS mode (chained v1 mechanic on an endless field) ----
+  endless: {
+    nextTeeGap: 60,        // next tee = max(where the ball stopped, post.x + this): always past the post
+    settleMax: 0.8,        // s after a goal before the next shot starts (v1 settle cap)
+    cutDist: 300,          // newRun: ball farther than this from x = 0 => teleport + camera cut (mode wipe)
+    continueCutDist: 400,  // continue: ball farther than this from the tee => teleport + snap
+    discRadius: 22,        // painted team-colour disc under endless posts (world units)
+  },
+
+  // ---- Graphics (pro style adaptive quality; retro always runs at full dpr) ----
+  gfx: { defaultQuality: 'auto' },
 
   // ---- Football field (broadcast side view; see SPEC.md §8.1) ----
   // The post always stands on the END LINE at world x = world.fieldEnd; every shot is a
@@ -193,7 +220,10 @@ export const CONFIG = deepFreeze({
     continuesPerRun: 1,
   },
 
-  // ---- Catalog (ids MUST match skins.js BALL_SKINS / STADIUM_THEMES keys) ----
+  // ---- Catalog ----
+  // Ball ids MUST match the ball skins of every style (styles/*/balls.js). Stadium ids are
+  // "<style>_<theme>" for PRO and the bare theme id for RETRO (v1 ids stay valid); every
+  // stadium names its art style ('retro' | 'pro') and base theme (engine/themes.js).
   catalog: {
     balls: [
       { id: 'classic',    name: 'Classic',    price: 0 },
@@ -213,11 +243,22 @@ export const CONFIG = deepFreeze({
       { id: 'gold',       name: 'Gold',       price: 1000 },
     ],
     stadiums: [
-      { id: 'day',    name: 'Day Game',     price: 0 },
-      { id: 'night',  name: 'Night Lights', price: 300 },
-      { id: 'snow',   name: 'Snow Bowl',    price: 500 },
-      { id: 'sunset', name: 'Beach Sunset', price: 600 },
-      { id: 'arcade', name: 'Neon Arcade',  price: 800 },
+      { id: 'day',        name: 'Day Game',     price: 0,    style: 'retro', theme: 'day' },
+      { id: 'night',      name: 'Night Lights', price: 300,  style: 'retro', theme: 'night' },
+      { id: 'snow',       name: 'Snow Bowl',    price: 500,  style: 'retro', theme: 'snow' },
+      { id: 'sunset',     name: 'Beach Sunset', price: 600,  style: 'retro', theme: 'sunset' },
+      { id: 'arcade',     name: 'Neon Arcade',  price: 800,  style: 'retro', theme: 'arcade' },
+      // PRO GRAPHICS: Pro Day is the cheap hook (reachable in the first sessions); the rest step
+      // above the priciest retro stadium.
+      { id: 'pro_day',    name: 'Day Game',     price: 400,  style: 'pro',   theme: 'day' },
+      { id: 'pro_night',  name: 'Night Lights', price: 1200, style: 'pro',   theme: 'night' },
+      { id: 'pro_snow',   name: 'Snow Bowl',    price: 1500, style: 'pro',   theme: 'snow' },
+      { id: 'pro_sunset', name: 'Beach Sunset', price: 1800, style: 'pro',   theme: 'sunset' },
+      { id: 'pro_arcade', name: 'Neon Arcade',  price: 2400, style: 'pro',   theme: 'arcade' },
+    ],
+    // Permanent upgrades (no equip). The Aim Slider shows the power slider on every kick.
+    upgrades: [
+      { id: 'aim_slider', name: 'Aim Slider',   price: 10000 },
     ],
   },
   defaults: { ball: 'classic', stadium: 'day' },
@@ -246,8 +287,8 @@ export const CONFIG = deepFreeze({
     tap: 8, flick: 12, goal: 18, perfect: [20, 40, 30], coin: 6, fail: [50, 30, 50], buy: 20,
   },
 
-  // ---- Save ----
-  save: { key: 'flickgoal.save', version: 1 },
+  // ---- Save (v2 key; the v1 key is only ever READ, once, to import a v1 player) ----
+  save: { key: 'flickgoal.save2', version: 2, importKey: 'flickgoal.save' },
 
   // ---- UI ----
   ui: { themeColor: '#4FC3F7' },

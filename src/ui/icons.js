@@ -44,6 +44,12 @@ export const ICONS = {
   stadium: svg('<path d="M4 20V11M20 20V11" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M8 20v-8h8v8M8 12V4.5M16 12V4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="4" cy="8.5" r="2.3" fill="currentColor"/><circle cx="20" cy="8.5" r="2.3" fill="currentColor"/>'),
   coins: svg('<ellipse cx="12" cy="17" rx="8" ry="3.2" fill="currentColor"/><ellipse cx="12" cy="12.6" rx="8" ry="3.2" fill="currentColor" stroke="#fff" stroke-width="1.2"/><ellipse cx="12" cy="8.2" rx="8" ry="3.2" fill="currentColor" stroke="#fff" stroke-width="1.2"/>'),
   info: svg('<circle cx="12" cy="12" r="10" fill="currentColor"/><path d="M12 11v6" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="7.3" r="1.6" fill="#fff"/>'),
+  // v2: game modes + aim slider upgrade
+  goalpost: svg('<path d="M12 21.5v-9M5.5 12.5h13M5.5 12.5V3M18.5 12.5V3" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 21.5h6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>'),
+  infinity: svg('<path d="M12 12c-2-3-3.6-4.6-6-4.6a4.6 4.6 0 0 0 0 9.2c2.4 0 4-1.6 6-4.6s3.6-4.6 6-4.6a4.6 4.6 0 0 1 0 9.2c-2.4 0-4-1.6-6-4.6z" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/>'),
+  swap: svg('<path d="M4.5 8.5h13.5M14.5 4.5l4 4-4 4M19.5 15.5H6M9.5 11.5l-4 4 4 4" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>'),
+  flag: svg('<path d="M6 21.5V3" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><path d="M6.8 3.6c3.8-1.8 6.4 1.9 11.4.2v9.4c-5 1.7-7.6-2-11.4-.2z" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'),
+  slider: svg('<rect x="2.5" y="9" width="19" height="6" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><rect x="10" y="10.4" width="6" height="3.2" rx="1.6" fill="currentColor" opacity=".45"/><rect x="12" y="5" width="3.2" height="14" rx="1.6" fill="currentColor"/>'),
   // Multicolor gold coin (used everywhere coins appear).
   coin: svg(
     '<circle cx="12" cy="12" r="11" fill="#F5A300"/>' +

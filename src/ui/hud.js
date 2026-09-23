@@ -1,9 +1,8 @@
-// In-run HUD: big score, shot clock bar, pause button, coin pill, popups, first-shot hint.
-// update(hud) runs every frame but only touches the DOM when a value actually changed.
+// In-run HUD: big score, shot clock bar, ENDLESS distance pill, pause button, coin pill, popups,
+// first-shot aim hints. update(hud) runs every frame but only touches the DOM when a value changed.
 
 import { h, setText, fmtNum, replayClass, centerIn } from './dom.js';
 import { icon } from './icons.js';
-import { CONFIG } from '../config.js';
 
 /** Reusable coin counter pill (menu, HUD, game over, store). */
 export function createCoinPill({ onClick } = {}) {
@@ -35,22 +34,35 @@ export function createHud({ stage, fx, onPause, onCoinPill }) {
     type: 'button', html: icon('pause'), onclick: onPause, attrs: { 'aria-label': 'Pause' },
   });
   const pill = createCoinPill({ onClick: onCoinPill });
-  // First-shot hint. Without the rail the guide dots are the only aim cue, so the hint teaches them.
-  const hint = CONFIG.rail.visible
-    ? h('div.hud-hint', h('span.hud-hint-dot'), 'TAP when the marker is in the ', h('b', 'GREEN'))
-    : h('div.hud-hint.guide',
-      h('span.hud-hint-dots', h('i'), h('i'), h('i')),
-      h('span.hud-hint-text', h('b', 'TAP when the dots are evenly spaced'),
-        h('small', 'Bunched = too weak · stretched = too strong')));
+  // ENDLESS: running distance ("140 YDS") under the clock
+  const distNum = h('span.hud-dist-num', '0');
+  const dist = h('div.hud-dist', { attrs: { 'aria-label': 'Distance' } },
+    h('span.hud-dist-ic', { html: icon('flag') }), distNum, h('span.hud-dist-unit', 'YDS'));
+  dist.hidden = true;
+  // First-shot aim hints (V2_SPEC §6.4): one element, three variants swapped by data-kind.
+  //  rail: slider tutorial / upgrade   fade: the slider is fading, use the dots   dots: dots only
+  const hintRail = h('span.hint-v.hint-rail', h('span.hud-hint-dot'), h('span', 'TAP when the marker is in the ', h('b', 'GREEN')));
+  const dotsGlyph = () => h('span.hud-hint-dots', h('i'), h('i'), h('i'));
+  const hintFade = h('span.hint-v.hint-fade', dotsGlyph(),
+    h('span.hud-hint-text', h('b', 'Now aim with the dots'), h('small', 'Evenly spaced = right power')));
+  const hintDots = h('span.hint-v.hint-dots', dotsGlyph(),
+    h('span.hud-hint-text', h('b', 'TAP when the dots are evenly spaced'),
+      h('small', 'Bunched = too weak · stretched = too strong')));
+  const hint = h('div.hud-hint', { dataset: { kind: 'rail' }, attrs: { 'aria-live': 'polite' } }, hintRail, hintFade, hintDots);
 
-  const el = h('section.screen.hud', { dataset: { screen: 'hud' } },
+  const el = h('section.screen.hud', { dataset: { screen: 'hud', mode: 'field' } },
     h('div.topbar', pauseBtn, h('div.topbar-mid'), pill.el),
-    h('div.hud-center', score, clock),
+    h('div.hud-center', score, clock, dist),
     hint);
 
   let lastScore = -1;
   let lastClock = -1;
   let lastState = '';
+  let mode = 'field';
+  let yardsShown = -1;
+  let yardsTarget = 0;
+  let yardsFrom = 0;
+  let yardsT0 = 0;
 
   function update(s) {
     if (!s) return;
@@ -73,6 +85,36 @@ export function createHud({ stage, fx, onPause, onCoinPill }) {
       lastState = state;
       clock.dataset.state = state;
     }
+    if (mode === 'endless') updateDist(s.yards | 0);
+  }
+
+  /** Distance pill: counts up over 400 ms when the yards change, with a bump. */
+  function updateDist(yards) {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (yards !== yardsTarget) {
+      yardsFrom = yardsShown < 0 ? yards : yardsShown;
+      yardsTarget = yards;
+      yardsT0 = now;
+      if (yards > yardsFrom) replayClass(dist, 'bump', 360);
+    }
+    const u = Math.min(1, (now - yardsT0) / 400);
+    const e = 1 - Math.pow(1 - u, 3);
+    const v = Math.round(yardsFrom + (yardsTarget - yardsFrom) * e);
+    if (v !== yardsShown) {
+      yardsShown = v;
+      setText(distNum, fmtNum(v));
+    }
+  }
+
+  /** 'field' | 'endless': the distance pill only shows in ENDLESS. */
+  function setMode(m) {
+    mode = m === 'endless' ? 'endless' : 'field';
+    el.dataset.mode = mode;
+    dist.hidden = mode !== 'endless';
+    yardsShown = -1;
+    yardsTarget = 0;
+    yardsFrom = 0;
+    setText(distNum, '0');
   }
 
   function scorePos() {
@@ -100,16 +142,26 @@ export function createHud({ stage, fx, onPause, onCoinPill }) {
     replayClass(clock, 'shake', 400);
   }
 
-  function showHint(v) {
-    el.classList.toggle('show-hint', !!v);
+  /** kind: 'rail' | 'fade' | 'dots' to show that hint; null / false hides it. */
+  function showHint(kind) {
+    if (kind === true) kind = 'dots';
+    if (kind === 'rail' || kind === 'fade' || kind === 'dots') {
+      hint.dataset.kind = kind;
+      el.classList.add('show-hint');
+    } else {
+      el.classList.remove('show-hint');
+    }
   }
 
   function reset() {
     lastScore = -1;
     lastClock = -1;
     lastState = '';
-    showHint(false);
+    showHint(null);
   }
 
-  return { el, pill, update, onScore, onClockLow, showHint, reset };
+  return {
+    el, pill, update, onScore, onClockLow, showHint, reset, setMode,
+    get hintKind() { return el.classList.contains('show-hint') ? hint.dataset.kind : null; },
+  };
 }

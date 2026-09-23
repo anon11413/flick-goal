@@ -1,5 +1,7 @@
 # Flick Goal — Build Spec (v1.0)
 
+> **v2: see V2_SPEC.md (wins where they differ).** This file stays the v1 base contract.
+
 One-tap American-football field-goal flick arcade game, portrait, Flappy Hoops look.
 Two engineers build in parallel **without talking**. This file plus `src/config.js` is the whole contract.
 GAME_DESIGN.md / MATH.md are background; where they differ, **this file wins** (numbers below were validated by simulation: every generated shot is hittable, solver averages ~1.3 tries, ~3 ms/shot).

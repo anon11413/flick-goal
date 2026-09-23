@@ -71,8 +71,8 @@ test('checkSchedule reports failures instead of throwing on a broken schedule', 
   assert.ok(r.failures.some((f) => f.rule === 'dwell'));
 });
 
-test('hidden rail: the aim window is more generous than the base slider version', () => {
-  assert.equal(CONFIG.rail.visible, false);
+test('guide-dot aiming: the aim window is more generous than the base slider version (same curve for everyone)', () => {
+  assert.equal(CONFIG.rail.visible, undefined, 'v2: the slider is per shot (aimAssist), not a config switch');
   // ~0.7 s inside the sweet band per pass on the first shot, still >= 0.35 s by goal 5
   assert.ok(dwell(0) >= 0.65, `dwell(0) = ${dwell(0)}`);
   assert.ok(dwell(5) >= 0.35, `dwell(5) = ${dwell(5)}`);

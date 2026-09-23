@@ -228,7 +228,7 @@ test('dev state: ?round=N enables dev mode, clamps and persists in its own key',
   assert.equal(dev.enabled(), true);
   assert.equal(dev.startRound(), 30);
   assert.equal(dev.startMade(), 29);
-  assert.deepEqual(JSON.parse(st.map.get(DEV_KEY)), { devEnabled: true, startRound: 30 });
+  assert.deepEqual(JSON.parse(st.map.get(DEV_KEY)), { devEnabled: true, startRound: 30, slider: 'default', gfx: 'auto' });
   assert.deepEqual([...st.map.keys()], [DEV_KEY], 'never touches the main save key');
   // survives a reload (no URL flag)
   const again = createDevState({ storage: st });
@@ -254,7 +254,7 @@ test('dev state: ?dev=1 enables without changing the round; toggle / setStartRou
   assert.equal(dev.toggle(), false);
   assert.equal(dev.startRound(), 1);
   assert.equal(calls, 3);
-  assert.deepEqual(JSON.parse(st.map.get(DEV_KEY)), { devEnabled: false, startRound: CONFIG.dev.maxRound });
+  assert.deepEqual(JSON.parse(st.map.get(DEV_KEY)), { devEnabled: false, startRound: CONFIG.dev.maxRound, slider: 'default', gfx: 'auto' });
 });
 
 test('dev state: cfg.dev.enabled=false removes every access path', () => {
@@ -280,4 +280,64 @@ test('dev state: broken / throwing storage never throws', () => {
   assert.equal(junk.startRound(), 1);
   const none = createDevState({ search: '?round=5', storage: null });
   assert.equal(none.startRound(), 5);
+});
+
+// ---------------------------------------------------------------- v2: modes, slider force, graphics
+test('dev start round works in ENDLESS too: same difficulty parameters as FIELD for the same N', () => {
+  for (const n of [0, 1, 9, 29, 99]) {
+    const a = setup(3);
+    a.game.newRun({ startMade: n, mode: 'field' });
+    const b = setup(3);
+    b.game.newRun({ startMade: n, mode: 'endless' });
+    assert.equal(b.game.mode, 'endless');
+    assert.deepEqual(difficultyOf(b.game.world.shot), difficultyOf(a.game.world.shot), `n=${n}`);
+    assertShotMatchesSchedule(b.game.world.shot, n, `endless n=${n}`);
+    assert.equal(b.game.hud().startMade, n);
+    assert.equal(b.events[0].p.mode, 'endless');
+  }
+});
+
+test('ENDLESS dev run never updates Best; the gameover payload carries mode + yards', () => {
+  const { game, events } = setup(4);
+  game.newRun({ startMade: 10, mode: 'endless' });
+  stepUntil(game, () => game.phase === 'aim');
+  game.world.marker.t = 0;
+  game.tap();
+  stepUntil(game, () => game.phase === 'over', 8);
+  const go = events.find((e) => e.n === 'gameover').p;
+  assert.equal(go.mode, 'endless');
+  assert.equal(go.yards, 0);
+  assert.equal(isDevRun(go), true);
+  assert.equal(nextBest(5, go), 5);
+});
+
+test('dev state: slider force (default / on / off) persists, applies only in dev mode, ?slider= enables dev', () => {
+  const st = memStorage();
+  const dev = createDevState({ storage: st });
+  assert.equal(dev.sliderForce(), 'default');
+  dev.setSliderForce('on');
+  assert.equal(dev.storedSlider(), 'on');
+  assert.equal(dev.sliderForce(), 'default', 'inert while developer mode is off');
+  dev.setEnabled(true);
+  assert.equal(dev.sliderForce(), 'on');
+  dev.setSliderForce('bogus');
+  assert.equal(dev.sliderForce(), 'default');
+  dev.setSliderForce('off');
+  const again = createDevState({ storage: st });
+  assert.equal(again.sliderForce(), 'off');
+  const url = createDevState({ search: '?slider=on', storage: memStorage() });
+  assert.equal(url.enabled(), true);
+  assert.equal(url.sliderForce(), 'on');
+  const junk = createDevState({ search: '?slider=maybe', storage: memStorage() });
+  assert.equal(junk.enabled(), false);
+  assert.equal(junk.sliderForce(), 'default');
+  // graphics override
+  dev.setGfx('low');
+  assert.equal(createDevState({ storage: st }).gfx(), 'low');
+  dev.setGfx('nope');
+  assert.equal(dev.gfx(), 'auto');
+  const off = createDevState({ cfg: { ...CONFIG, dev: { ...CONFIG.dev, enabled: false } }, search: '?slider=on', storage: memStorage() });
+  off.setSliderForce('on');
+  assert.equal(off.sliderForce(), 'default');
+  assert.equal(off.gfx(), 'auto');
 });

@@ -1,12 +1,17 @@
-// Coin wallet, cosmetic catalog (balls / stadiums), timed free gift and rewarded-coin cooldown.
-// Pure: depends only on a save manager (createSaveManager) and injectable clock / rng.
+// Coin wallet, cosmetic catalog (balls / stadiums), permanent upgrades (Aim Slider), timed free
+// gift and rewarded-coin cooldown. Pure: depends only on a save manager and injectable clock / rng.
 
 import { CONFIG } from '../config.js';
 
 const KINDS = {
   ball: { catalog: 'balls', owned: 'balls', equipped: 'ball' },
   stadium: { catalog: 'stadiums', owned: 'stadiums', equipped: 'stadium' },
+  // permanent upgrades: bought once, never equipped; each can be switched on / off (settings)
+  upgrade: { catalog: 'upgrades', owned: 'upgrades', equipped: null },
 };
+
+/** Settings flag that switches an owned upgrade on / off. */
+const UPGRADE_SETTING = { aim_slider: 'aimSlider' };
 
 export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = Math.random } = {}) {
   if (!save) throw new Error('createShop: save manager required');
@@ -22,7 +27,8 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
   const kindInfo = (kind) => KINDS[kind] || null;
   const catalogItem = (kind, id) => {
     const k = kindInfo(kind);
-    return k ? cfg.catalog[k.catalog].find((it) => it.id === id) || null : null;
+    const list = k ? cfg.catalog[k.catalog] : null;
+    return Array.isArray(list) ? list.find((it) => it.id === id) || null : null;
   };
 
   function coins() { return save.data.coins; }
@@ -48,25 +54,59 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
 
   function isOwned(kind, id) {
     const k = kindInfo(kind);
-    return !!k && save.data.owned[k.owned].includes(id);
+    const list = k && save.data.owned ? save.data.owned[k.owned] : null;
+    return Array.isArray(list) && list.includes(id);
   }
 
   function equipped(kind) {
     const k = kindInfo(kind);
-    return k ? save.data.equipped[k.equipped] : null;
+    return k && k.equipped ? save.data.equipped[k.equipped] : null;
+  }
+
+  /** Owned AND switched on (upgrades only). */
+  function upgradeActive(id) {
+    if (!isOwned('upgrade', id)) return false;
+    const flag = UPGRADE_SETTING[id];
+    return flag ? save.data.settings[flag] !== false : true;
+  }
+
+  /** Switch an owned upgrade on / off. Returns false when it is not owned. */
+  function setUpgradeActive(id, active) {
+    if (!isOwned('upgrade', id)) return false;
+    const flag = UPGRADE_SETTING[id];
+    if (!flag) return false;
+    const v = !!active;
+    if (save.data.settings[flag] !== v) {
+      save.update((d) => { d.settings[flag] = v; });
+      emit({ type: 'upgrade', id, active: v });
+    }
+    return true;
   }
 
   function items(kind) {
     const k = kindInfo(kind);
-    if (!k) return [];
+    const list = k ? cfg.catalog[k.catalog] : null;
+    if (!Array.isArray(list)) return [];
+    if (kind === 'upgrade') {
+      return list.map((it) => ({
+        id: it.id, name: it.name, price: it.price, owned: isOwned(kind, it.id), active: upgradeActive(it.id),
+      }));
+    }
     const eq = equipped(kind);
-    return cfg.catalog[k.catalog].map((it) => ({
-      id: it.id,
-      name: it.name,
-      price: it.price,
-      owned: isOwned(kind, it.id),
-      equipped: it.id === eq,
-    }));
+    return list.map((it) => {
+      const row = {
+        id: it.id,
+        name: it.name,
+        price: it.price,
+        owned: isOwned(kind, it.id),
+        equipped: it.id === eq,
+      };
+      if (kind === 'stadium') {
+        row.style = it.style === 'pro' ? 'pro' : 'retro';
+        row.theme = it.theme || it.id;
+      }
+      return row;
+    });
   }
 
   function buy(kind, id) {
@@ -76,18 +116,23 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
     const have = save.data.coins;
     if (have < item.price) return { ok: false, reason: 'insufficient', need: item.price - have };
     const k = kindInfo(kind);
+    const flag = kind === 'upgrade' ? UPGRADE_SETTING[id] : null;
     save.update((d) => {
       d.coins -= item.price;
+      if (!Array.isArray(d.owned[k.owned])) d.owned[k.owned] = [];
       d.owned[k.owned].push(id);
+      if (flag) d.settings[flag] = true; // a fresh upgrade starts switched ON
     });
     emit({ type: 'coins', delta: -item.price, source: 'buy' });
     emit({ type: 'owned', kind, id });
+    if (kind === 'upgrade') emit({ type: 'upgrade', id, active: upgradeActive(id) });
     return { ok: true };
   }
 
   function equip(kind, id) {
     const item = catalogItem(kind, id);
     if (!item) return { ok: false, reason: 'unknown' };
+    if (!kindInfo(kind).equipped) return { ok: false, reason: 'unknown' };
     if (!isOwned(kind, id)) return { ok: false, reason: 'locked' };
     const k = kindInfo(kind);
     if (save.data.equipped[k.equipped] !== id) {
@@ -179,7 +224,7 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
   }
 
   return {
-    coins, addCoins, spendCoins, items, isOwned, equipped, buy, equip,
+    coins, addCoins, spendCoins, items, isOwned, equipped, buy, equip, upgradeActive, setUpgradeActive,
     giftStatus, claimGift, rewardedCoinsStatus, grantRewardedCoins,
     applyProduct, hasNoAds, setNoAds, refresh, on,
   };
