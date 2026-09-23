@@ -51,7 +51,7 @@ localStorage.clear(); location.reload()    // truly fresh
 
 ## Developer option: start at a later round
 
-To playtest higher levels without playing up to them, you can pick the round a run starts on. Round R is the R-th kick of a run. Starting at round R plays exactly like a normal run that has already made R-1 goals: same needle speed, band width, shot clock, kick distance, post heights, PERFECT window and background colour. The score starts at R-1, the streak and run coins start at 0, and Continue is still available.
+To playtest higher levels without playing up to them, you can pick the round a run starts on. Round R is the R-th kick of a run. Starting at round R plays exactly like a normal run that has already made R-1 goals: same needle speed, band width, shot clock, kick distance, post heights and PERFECT window. The score starts at R-1, the streak and run coins start at 0, and Continue is still available.
 
 **On the phone:** open Settings and tap the version label (`v1.0.0`) at the bottom **5 times** quickly. A "Developer mode ON" toast appears, and a **DEVELOPER** section shows up in Settings. Set **Start round** with the -/+ buttons or the quick chips (1, 5, 10, 20, 30, 50, 75, 100), then go back and play. Tap the version 5 times again to turn developer mode off.
 
@@ -60,6 +60,7 @@ To playtest higher levels without playing up to them, you can pick the round a r
 - The setting is saved in its own localStorage key (`flickgoal.dev`), separate from the game save. It stays set across reloads, and every build served from the same address shares it.
 - While the start round is above 1, a small **DEV · R30** badge shows on the menu (top-left) and in the HUD (under the pause button).
 - Dev runs **never change your Best score** and never show NEW BEST. Game Over shows a small "DEV RUN · started R30" tag instead. Coins are earned normally.
+- The background colour follows the score, so a dev run starts on the colour for score R-1. A strong natural run usually has a higher score at the same kick (PERFECT shots and streaks add bonus points), so it may show a later colour. Everything that sets the difficulty matches.
 - Range 1 to 200. Round 1 is the normal game. While developer mode is off, every run starts at round 1 (the chosen round is remembered for when you turn it back on).
 - For release, set `dev.enabled: false` in `src/config.js`. That removes every way in: the URL flags, the version-tap unlock and the section.
 - **On this branch (`try/no-slider`)** there is no needle or band to see: round R gives this branch's slower aim sweep (`difficulty.speed` 0.40 to 0.95) and the same scoring window, so the guide dots behave exactly as they would after R-1 goals. A good test is `?round=16` or higher, where reading the dots gets hard. The first-shot dots hint only appears on runs that start at round 1.
