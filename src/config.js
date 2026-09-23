@@ -42,7 +42,11 @@ export const CONFIG = deepFreeze({
   },
 
   // ---- Aim rail (screen space, css px; drawn by render.js, anchored to the ball) ----
+  // The rail position t always ping-pongs on [0,1] in the engine (it drives angle + power,
+  // see `mapping`). `visible: false` hides the whole track (sweet band, perfect strip, edge
+  // brackets, needle): the launch-angle guide dots from the ball are then the only aim cue.
   rail: {
+    visible: false,        // false = no track/band/needle drawn; guide dots only
     offsetX: 34,           // rail start = ball screen pos + (offsetX, offsetY); sits right of the ball so the
     offsetY: 6,            // launch-angle dots (drawn from the ball) never sit under the track
     angleDeg: 36,          // up-right; t=0 at start (low/short), t=1 at end (high/long)
@@ -53,7 +57,18 @@ export const CONFIG = deepFreeze({
     markerWidth: 6,        // needle marker width (css px); slim so the sweet band stays visible around it
     markerOverhang: 8,     // needle sticks out this far above / below the track
     edgeMargin: 12,        // whole rail shifted to stay this far inside the stage
-    fadeOut: 0.15,         // s after flick
+    fadeOut: 0.15,         // s after flick (track and guide)
+    // launch-angle guide (engine/guide.js): a short row of dots from the ball along the launch
+    // angle. Dot spacing shows strength vs the shot's ideal power on an S-curve centred on it:
+    // bunched = too weak, evenly spaced = right, stretched = too strong (NOT a trajectory preview).
+    guideDots: 5,
+    guideStart: 26,        // first dot distance from the ball centre (css px)
+    guideSpacing: 13,      // dot spacing at the ideal power (css px)
+    guideSpread: 0.30,     // spacing ranges over guideSpacing * (1 +- spread): ~9.1 .. 16.9 px
+    guideSoft: 0.07,       // power-ratio width of the S-curve (smaller = row changes faster near ideal)
+    guideRadius: 4.4,      // first dot radius; each next dot is guideRadiusStep smaller
+    guideRadiusStep: 0.5,
+    guideOutline: 1.3,     // soft dark rim so the white dots read on light themes (snow, sky)
   },
 
   // ---- Physics ----
@@ -105,13 +120,13 @@ export const CONFIG = deepFreeze({
   // ---- Difficulty curves (MATH.md, adjusted). n = goals made this run ----
   // curve(n) = asym - (asym - start) * exp(-n / scale)
   difficulty: {
-    speed:    { start: 0.50, asym: 1.10, scale: 16 },   // rail-lengths / s
+    speed:    { start: 0.40, asym: 0.95, scale: 16 },   // rail-lengths / s (base 0.50 -> 1.10; slower: no visible band)
     band:     { start: 0.28, asym: 0.105, scale: 20 },  // W(n), fraction of rail
     clock:    { start: 7.0, asym: 2.0, scale: 14 },     // L(n) seconds
     distance: { start: 230, asym: 400, scale: 18, jitter: 30 }, // tee -> post, u
     gap:      { start: 165, asym: 120, scale: 22 },     // upright length above bar, u
     barHeight: { min: 50, range: 150, rampShots: 15 },  // bar in [min, min + range*min(1,n/ramp)]
-    bandAlpha: { start: 0.95, asym: 0.45, scale: 30 },  // sweet-band fill opacity (edges are always drawn)
+    bandAlpha: { start: 0.95, asym: 0.45, scale: 30 },  // sweet-band fill opacity when rail.visible (edges are always drawn)
     reaction: 0.12,        // tau_r
     dwellMin: 0.09,        // D_min, seconds (hard)
     clockMargin: 0.15,     // added to per-shot worst-case clock bound

@@ -458,6 +458,16 @@ button.coin-pill { cursor: pointer; padding-right: 4px; min-height: 44px; }
 .hud-hint b { color: #6BFFB0; font-weight: 900; }
 .hud-hint-dot { width: 6px; height: 18px; border-radius: 3px; background: #fff; box-shadow: 0 0 0 2px var(--accent); margin: 0 3px; }
 .hud.show-hint .hud-hint { opacity: 1; transform: translate(-50%, 0); }
+/* guide-dots variant (rail hidden): rising dot row + two-line copy */
+.hud-hint.guide { gap: 9px; padding: 8px 14px 8px 12px; border-radius: 20px; width: max-content; max-width: calc(100% - 28px); white-space: normal; }
+.hud-hint-dots { position: relative; width: 26px; height: 22px; flex: none; }
+.hud-hint-dots i { position: absolute; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1.5px rgba(20, 28, 50, .45); }
+.hud-hint-dots i:nth-child(1) { width: 8px; height: 8px; left: 0; bottom: 0; }
+.hud-hint-dots i:nth-child(2) { width: 7px; height: 7px; left: 9px; bottom: 7px; }
+.hud-hint-dots i:nth-child(3) { width: 6px; height: 6px; left: 18px; bottom: 14px; }
+.hud-hint-text { display: flex; flex-direction: column; line-height: 1.15; }
+.hud-hint.guide b { color: #fff; font-size: clamp(13px, 3.9vw, 15px); }
+.hud-hint-text small { font-size: clamp(11px, 3.2vw, 12.5px); font-weight: 700; opacity: .85; }
 
 /* ------------------------------------------------------------------ fx layer */
 .pop-text {

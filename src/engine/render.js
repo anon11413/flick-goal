@@ -10,7 +10,7 @@ import {
   BALL_SKINS, STADIUM_THEMES, drawBall, themePalette, mixPalette, mixColor, withAlpha, roundRectPath,
 } from './skins.js';
 import { checkSchedule, dwell } from './difficulty.js';
-import { mapRail } from './physics.js';
+import { guideLayout } from './guide.js';
 import { TEE_ROT } from './game.js';
 
 const TAU = Math.PI * 2;
@@ -627,9 +627,57 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     }
   }
 
-  function drawRail(w, ballScreen, a, pal) {
+  /**
+   * Aim cues: the rail track (only when `rail.visible`) and the launch-angle guide dots.
+   * The guide is always drawn; with the rail hidden it is the player's only aim cue.
+   */
+  function drawAim(w, ballScreen, a, pal, T, skin) {
     const A = railAlpha(w);
     if (A <= 0.001 || !w.shot) return;
+    const mk = w.marker;
+    const t = mk.locked ? mk.t : lerp(mk.pt, mk.t, a);
+    if (RL.visible) drawRailTrack(w, ballScreen, t, A, pal);
+    // in flight the guide stays frozen at the tee (the kick that was taken) while it fades out
+    const anchor = w.phase === 'fly'
+      ? { x: T.sx(w.teeX), y: T.sy(R + teeLift(skin)) }
+      : ballScreen;
+    drawGuide(w.shot, anchor, t, A);
+  }
+
+  /**
+   * Launch-angle guide: a short row of dots from the ball along the launch angle for rail
+   * position t. Dot spacing shows strength vs the shot's ideal power (guide.js): bunched =
+   * too weak, evenly spaced = right, stretched = too strong. Not a trajectory preview.
+   */
+  function drawGuide(shot, anchor, t, A) {
+    const { angle, dots } = guideLayout(shot, t, cfg);
+    const pop = 1 + 0.35 * markerPop;
+    const ca = Math.cos(angle);
+    const sa = Math.sin(angle);
+    ctx.save();
+    ctx.globalAlpha = A;
+    for (const dot of dots) {
+      const px = anchor.x + ca * dot.d;
+      const py = anchor.y - sa * dot.d;
+      const rr = dot.r * pop;
+      // drop shadow, soft dark rim, white dot
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      ctx.arc(px, py + 1.8, rr + RL.guideOutline, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(20,28,50,0.42)';
+      ctx.beginPath();
+      ctx.arc(px, py, rr + RL.guideOutline, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.beginPath();
+      ctx.arc(px, py, rr, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawRailTrack(w, ballScreen, t, A, pal) {
     const shot = w.shot;
     const band = shot.band;
     const th = RL.thickness;
@@ -655,7 +703,6 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     x0 += dx; y0 += dy; x1 += dx; y1 += dy;
 
     const mk = w.marker;
-    const t = mk.locked ? mk.t : lerp(mk.pt, mk.t, a);
 
     ctx.save();
     ctx.globalAlpha = A;
@@ -743,30 +790,6 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     ctx.fillStyle = mcol;
     ctx.fill();
     ctx.restore();
-
-    // launch-angle hint dots from the ball (on top of the track)
-    if (w.phase !== 'fly') {
-      const { angle, power } = mapRail(shot, t, cfg);
-      const pf = clamp(power / shot.powerC, 0.6, 1.5);
-      ctx.save();
-      ctx.globalAlpha = A * 0.85;
-      for (let i = 0; i < 5; i++) {
-        const d = 24 + i * 12 * pf;
-        const px = ballScreen.x + Math.cos(angle) * d;
-        const py = ballScreen.y - Math.sin(angle) * d;
-        const rr = 4.2 - i * 0.55;
-        ctx.fillStyle = withAlpha('#000000', 0.18);
-        ctx.beginPath();
-        ctx.arc(px, py + 1.5, rr, 0, TAU);
-        ctx.fill();
-        ctx.fillStyle = '#FFFFFF';
-        ctx.beginPath();
-        ctx.arc(px, py, rr, 0, TAU);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
   }
 
   // ------------------------------------------------------------------ debug
@@ -906,7 +929,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     drawRings(T);
     ctx.restore();
 
-    drawRail(w, { x: ballScreen.x, y: ballScreen.y }, a, pal);
+    drawAim(w, { x: ballScreen.x, y: ballScreen.y }, a, pal, T, skin);
 
     if (flash > 0.001) {
       ctx.fillStyle = withAlpha(flashColor, flash);

@@ -49,7 +49,8 @@ localStorage.clear(); location.reload()    // truly fresh
 
 ## What to look for
 
-- **Core feel.** Does the needle feel fair? The green band gets narrower and fainter as your score climbs, but its edge brackets always stay visible. Taps just outside the green can still go in off the post ("DOINK!"). This is on purpose.
+- **Core feel (branch `try/no-slider`).** There is no aim slider: the only aim cue is the short row of guide dots coming out of the ball. They sweep up and down, showing the launch angle (direction) and the kick strength (dot spacing). The tell is the spacing: **bunched = too weak, evenly spaced = right, stretched = too strong**. The spacing changes fastest right around the ideal kick, so you see the row "open up" as the sweep passes through the scoring window, even late in a run. The first-shot hint says this in the game. Does it feel fair and learnable? **Play past score 15 especially**: the window gets narrower there, and that is where reading the dots is hardest. The aim sweep is slower than on the slider version (`difficulty.speed` 0.40 rising to 0.95, base was 0.50 to 1.10). Taps just outside the ideal window can still go in off the post ("DOINK!"). This is on purpose.
+- **Slider back on.** Set `rail.visible: true` in `src/config.js` to draw the old rail (track, green band, needle) again for comparison. The first-shot hint switches back to the old copy automatically (the slower `difficulty.speed` stays; set it back to `{ start: 0.50, asym: 1.10 }` for the exact base feel).
 - **Difficulty.** Is it too easy or too hard around score 10, 30 and 60? See `difficulty` below.
 - **Economy.** Are coins earned too fast or too slow for the store prices?
 - **Flow.** Menu, play, game over, continue, store, back. Nothing should ever get stuck, and no browser pop-ups should appear.
@@ -76,11 +77,11 @@ All numbers live in one file. Edit it, then reload.
 
 | Area | Key | What it does |
 |---|---|---|
-| Difficulty | `difficulty.speed` `{start, asym, scale}` | Needle speed in rail-lengths per second: starts at `start`, approaches `asym`; `scale` is roughly how many goals it takes to get most of the way there |
-| | `difficulty.band` | Green band width as a fraction of the rail (W). Smaller is harder. Keep `band/speed >= dwellMin` |
+| Difficulty | `difficulty.speed` `{start, asym, scale}` | Aim sweep speed in rail-lengths per second: starts at `start`, approaches `asym`; `scale` is roughly how many goals it takes to get most of the way there |
+| | `difficulty.band` | Width of the scoring window as a fraction of the (invisible) rail (W). Smaller is harder. Keep `band/speed >= dwellMin` |
 | | `difficulty.clock` | Shot clock in seconds |
 | | `difficulty.distance`, `gap`, `barHeight` | Kick distance, goal window height, crossbar height ramp |
-| | `difficulty.bandAlpha` | How visible the green fill stays (0.95 fading to 0.45) |
+| | `difficulty.bandAlpha` | How visible the green fill stays (0.95 fading to 0.45); only used when `rail.visible` is true |
 | | `difficulty.dwellMin`, `reaction` | "Always beatable" guarantees (MATH.md). `npm test` fails if a change breaks them |
 | Scoring | `scoring.perfectFrac`, `perfectMaxPoints`, `tierEvery` | PERFECT window size, streak points cap, background colour change every N points |
 | Coins | `economy.coinsPerGoal`, `coinsPerPerfectBonus`, `pickups.chance`, `pickups.value` | Coin earn rate |
@@ -92,5 +93,8 @@ All numbers live in one file. Edit it, then reload.
 | Ads | `monetization.mode` (`'mock'` or `'off'`), `interstitialEvery`, `minGamesBeforeInterstitial` | Ad frequency |
 | Feel | `physics.gravity`, `restitutionPost`, `timing.introTime`, `timing.missDelay` | Arc weight, post bounciness, pacing |
 | Look | `view.zoomMax`, `view.slackBelow`, `view.hudReserve` | Camera framing (how big and how centred the action is) |
-| | `rail.lengthFrac`, `rail.thickness`, `rail.markerWidth` | Aim rail size and needle width |
+| | `rail.visible` | `false` (this branch): no slider, guide dots only. `true`: the old aim rail |
+| | `rail.guideDots`, `guideStart`, `guideSpacing`, `guideRadius`, `guideOutline` | Guide dot count, distance from the ball, spacing at the ideal power, size and dark rim |
+| | `rail.guideSpread`, `guideSoft` | How much the dot spacing stretches/bunches (±30%) and how quickly it changes around the ideal kick. Smaller `guideSoft` = easier to read. `npm test` checks every scoring window moves the dots by a visible amount |
+| | `rail.lengthFrac`, `rail.thickness`, `rail.markerWidth` | Aim rail size and needle width (when `rail.visible`) |
 | Haptics | `haptics.*` | Vibration patterns (ms) |

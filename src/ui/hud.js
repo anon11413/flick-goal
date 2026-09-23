@@ -3,6 +3,7 @@
 
 import { h, setText, fmtNum, replayClass, centerIn } from './dom.js';
 import { icon } from './icons.js';
+import { CONFIG } from '../config.js';
 
 /** Reusable coin counter pill (menu, HUD, game over, store). */
 export function createCoinPill({ onClick } = {}) {
@@ -34,7 +35,13 @@ export function createHud({ stage, fx, onPause, onCoinPill }) {
     type: 'button', html: icon('pause'), onclick: onPause, attrs: { 'aria-label': 'Pause' },
   });
   const pill = createCoinPill({ onClick: onCoinPill });
-  const hint = h('div.hud-hint', h('span.hud-hint-dot'), 'TAP when the marker is in the ', h('b', 'GREEN'));
+  // First-shot hint. Without the rail the guide dots are the only aim cue, so the hint teaches them.
+  const hint = CONFIG.rail.visible
+    ? h('div.hud-hint', h('span.hud-hint-dot'), 'TAP when the marker is in the ', h('b', 'GREEN'))
+    : h('div.hud-hint.guide',
+      h('span.hud-hint-dots', h('i'), h('i'), h('i')),
+      h('span.hud-hint-text', h('b', 'TAP when the dots are evenly spaced'),
+        h('small', 'Bunched = too weak · stretched = too strong')));
 
   const el = h('section.screen.hud', { dataset: { screen: 'hud' } },
     h('div.topbar', pauseBtn, h('div.topbar-mid'), pill.el),
