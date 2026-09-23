@@ -8,6 +8,7 @@
 import { CONFIG } from '../config.js';
 import {
   BALL_SKINS, STADIUM_THEMES, drawBall, themePalette, mixPalette, mixColor, withAlpha, roundRectPath,
+  drawField, fieldProjection,
 } from './skins.js';
 import { checkSchedule, dwell } from './difficulty.js';
 import { mapRail } from './physics.js';
@@ -23,6 +24,9 @@ const easeOutBack = (u) => {
   return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2);
 };
 const easeInOut = (u) => (u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2);
+const easeOutCubic = (u) => 1 - Math.pow(1 - u, 3);
+const UI_FONT = '"Arial Rounded MT Bold","SF Pro Rounded",ui-rounded,"Nunito","Segoe UI",system-ui,sans-serif';
+const POST_TWEEN = 0.4; // s: the post telescopes to the new attempt's bar / upright heights
 
 const CONFETTI = ['#FFD21F', '#FF5A5F', '#39D98A', '#4FC3F7', '#FFFFFF', '#B388FF', '#FF8A3D', '#FF7BC8'];
 const BAND = '#6BFFB0';
@@ -62,6 +66,14 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
   let lockColor = null;
   const trail = [];
   let fxAcc = 0;
+  // displayed post heights (tweened when a new attempt changes bar / top)
+  const postShow = { ref: null, bar: 0, top: 0, fromBar: 0, fromTop: 0, t: 1 };
+  // attempt banner ("38 YD FIELD GOAL") clock: seconds since the attempt was installed
+  let bannerT = 99;
+  let bannerOn = false;
+  let lastShot = null;
+  // kicking-net ripple (game 'net' event)
+  const netFx = { t: 9, y: 0, amp: 0 };
 
   if (debug) {
     const chk = checkSchedule(500, cfg);
@@ -188,6 +200,13 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       sparkle(p.x, p.y, 12);
       rings.push({ x: p.x, y: p.y, t: 0, dur: 0.3, r0: 6, r1: 40, color: '#FFD54F', w: 4 });
     }),
+    game.on('net', (e) => {
+      netFx.t = 0;
+      netFx.y = e.y;
+      netFx.amp = clamp((e.impact || 0) / 700, 0.25, 1);
+      const b = game.world.ball;
+      setSquash(0.8, 1.15, 0.16, Math.atan2(b.vy, b.vx));
+    }),
     game.on('land', (e) => {
       dust(e.x, 8, withAlpha('#FFFFFF', 0.9));
     }),
@@ -226,6 +245,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       if (rings[i].t >= rings[i].dur) rings.splice(i, 1);
     }
     if (shakeT < shakeDur) shakeT += dt;
+    netFx.t += dt;
     flash = Math.max(0, flash - dt * 1.6);
     if (squash) {
       squash.t += dt;
@@ -246,49 +266,6 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     g.addColorStop(1, pal.skyBottom);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, cssW, cssH);
-  }
-
-  function drawField(pal, T) {
-    const gy = T.sy(0);
-    if (gy > cssH + 30) return;
-    const top = Math.max(gy, -30);
-    const bottom = cssH + 30;
-    ctx.fillStyle = pal.ground;
-    ctx.fillRect(-30, top, cssW + 60, bottom - top);
-    // Skewed alternating stripes suggest depth; yard lines every 160 u.
-    const skew = 0.32;
-    const hgt = bottom - gy;
-    const stripe = 80;
-    const x0 = Math.floor((T.cx - 40 - hgt * skew / T.k) / stripe) * stripe;
-    const x1 = T.cx + T.viewW + stripe * 2;
-    ctx.fillStyle = pal.groundDark;
-    for (let x = x0; x < x1; x += stripe) {
-      if (((Math.round(x / stripe) % 2) + 2) % 2 === 0) continue;
-      const a = T.sx(x);
-      const b = T.sx(x + stripe);
-      ctx.beginPath();
-      ctx.moveTo(a, gy);
-      ctx.lineTo(b, gy);
-      ctx.lineTo(b + hgt * skew, bottom);
-      ctx.lineTo(a + hgt * skew, bottom);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.strokeStyle = withAlpha(pal.line, 0.45);
-    ctx.lineWidth = Math.max(1.5, 3 * T.k);
-    ctx.beginPath();
-    const y0 = Math.floor(x0 / 160) * 160;
-    for (let x = y0; x < x1; x += 160) {
-      const a = T.sx(x);
-      ctx.moveTo(a, gy + 6);
-      ctx.lineTo(a + hgt * skew, bottom);
-    }
-    ctx.stroke();
-    // grass lip
-    ctx.fillStyle = withAlpha(pal.line, 0.35);
-    ctx.fillRect(-30, gy, cssW + 60, Math.max(3, 5 * T.k));
-    ctx.fillStyle = withAlpha('#000000', 0.06);
-    ctx.fillRect(-30, gy + Math.max(3, 5 * T.k), cssW + 60, Math.max(2, 4 * T.k));
   }
 
   function ribbon(x, y, k, color, phase) {
@@ -370,6 +347,87 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       ctx.stroke();
       ribbon(X + o, Tp, k, pal.accent, 1.7);
     }
+    ctx.restore();
+  }
+
+  /**
+   * Kicking net behind the uprights (world x = post.x + field.netOffset), drawn in the
+   * same pseudo-3D as the post: far pole, mesh, near pole. Ripples when the ball hits it.
+   */
+  function drawNet(post, pal, T) {
+    if (!post) return;
+    const F = cfg.field;
+    const k = T.k;
+    const X = T.sx(post.x + F.netOffset);
+    const o = F.netHalf * k;
+    if (X + o < -20 || X - o > cssW + 20) return;
+    const G = T.sy(0);
+    const top = post.top + F.netAbove;
+    const bot = post.bar * F.netBottomFrac;
+    const Tp = T.sy(top);
+    const Bt = T.sy(bot);
+    const neon = themeId === 'arcade';
+    const pole = neon ? mixColor(pal.line, '#000000', 0.35) : '#2E3440';
+    const mesh = neon ? withAlpha(pal.zone || pal.accent, 0.55) : withAlpha('#FFFFFF', 0.4);
+    ctx.save();
+    ctx.lineCap = 'round';
+    // far pole (thinner, darker -> depth)
+    ctx.strokeStyle = mixColor(pole, '#000000', 0.25);
+    ctx.lineWidth = Math.max(1.5, 3.2 * k);
+    ctx.beginPath();
+    ctx.moveTo(X - o, G);
+    ctx.lineTo(X - o, Tp - 6 * k);
+    ctx.stroke();
+    // mesh: a sagging curtain between the poles, rippling where the ball hit
+    const rip = netFx.t < 1.2 ? netFx.amp * Math.exp(-netFx.t * 4.5) : 0;
+    const dxAt = (y) => {
+      if (rip <= 0.001) return 0;
+      const d = (y - netFx.y) / 70;
+      return rip * 16 * k * Math.exp(-d * d) * Math.cos(netFx.t * 22);
+    };
+    ctx.strokeStyle = mesh;
+    ctx.lineWidth = Math.max(0.6, 0.8 * k);
+    ctx.beginPath();
+    const cols = 6;
+    const stepY = 12;
+    for (let i = 0; i <= cols; i++) {
+      const u = i / cols;
+      const bow = Math.sin(Math.PI * u); // middle strands bulge back when hit
+      const x0 = X - o + 2 * o * u;
+      for (let y = bot; y <= top; y += stepY / 2) {
+        const sx = x0 + dxAt(y) * bow;
+        const sy = T.sy(y);
+        if (y === bot) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      }
+    }
+    for (let y = bot + stepY; y < top; y += stepY) {
+      const sy = T.sy(y);
+      if (sy > cssH + 4 || sy < -4) continue;
+      const d = dxAt(y);
+      ctx.moveTo(X - o, sy);
+      ctx.quadraticCurveTo(X + d, sy + 1.5 * k, X + o, sy);
+    }
+    ctx.stroke();
+    // weighted bottom hem + top cable
+    ctx.fillStyle = withAlpha(neon ? pal.zone || pal.accent : '#1E2330', 0.7);
+    ctx.fillRect(X - o, Bt - 2.5 * k, 2 * o, 3.5 * k);
+    ctx.strokeStyle = neon ? withAlpha(pal.line, 0.9) : withAlpha('#FFFFFF', 0.85);
+    ctx.lineWidth = Math.max(1, 1.8 * k);
+    ctx.beginPath();
+    ctx.moveTo(X - o, Tp);
+    ctx.lineTo(X + o, Tp);
+    ctx.stroke();
+    // near pole + padded base
+    ctx.strokeStyle = pole;
+    ctx.lineWidth = Math.max(2, 4.2 * k);
+    ctx.beginPath();
+    ctx.moveTo(X + o, G);
+    ctx.lineTo(X + o, Tp - 6 * k);
+    ctx.stroke();
+    ctx.fillStyle = mixColor(pal.accent, '#000000', 0.12);
+    roundRectPath(ctx, X + o - 5 * k, G - 22 * k, 10 * k, 22 * k + 2, 3 * k);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -462,6 +520,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
       case 'aim':
         return L;
       case 'intro':
+        if (w.freshBall) return L; // a fresh ball is teed up before the camera arrives
         return L * easeInOut(clamp(w.introT / (cfg.timing.introTime * 0.85), 0, 1));
       case 'fly':
         return L * clamp(1 - w.flightTime / 0.08, 0, 1);
@@ -615,6 +674,153 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
           break;
       }
     }
+  }
+
+  // ------------------------------------------------------------------ attempts: post tween, ghost ball, labels
+  /** The post stays on the end line; a new attempt telescopes it to the new heights. */
+  function displayPost(w, dt) {
+    const p = w.post;
+    if (!p) return null;
+    if (postShow.ref !== p) {
+      if (postShow.ref === null) {
+        postShow.bar = postShow.fromBar = p.bar;
+        postShow.top = postShow.fromTop = p.top;
+        postShow.t = 1;
+      } else {
+        postShow.fromBar = postShow.bar;
+        postShow.fromTop = postShow.top;
+        postShow.t = 0;
+      }
+      postShow.ref = p;
+    }
+    if (postShow.t < 1) postShow.t = Math.min(1, postShow.t + dt / POST_TWEEN);
+    const e = easeInOut(postShow.t);
+    postShow.bar = lerp(postShow.fromBar, p.bar, e);
+    postShow.top = lerp(postShow.fromTop, p.top, e);
+    return { x: p.x, bar: postShow.bar, top: postShow.top };
+  }
+
+  /** The previous ball stays where it came to rest and fades while the camera swoops away. */
+  function drawGhostBall(w, T) {
+    const g = w.oldBall;
+    if (!g || !w.swoop) return;
+    const u = clamp(w.swoop.t / w.swoop.dur, 0, 1);
+    const A = 1 - easeInOut(u);
+    if (A <= 0.01) return;
+    const X = T.sx(g.x);
+    const Y = T.sy(g.y);
+    const r = R * T.k;
+    if (X < -3 * r || X > cssW + 3 * r || Y < -3 * r || Y > cssH + 3 * r) return;
+    ctx.save();
+    ctx.globalAlpha = A;
+    ctx.fillStyle = withAlpha('#000000', 0.18);
+    ctx.beginPath();
+    ctx.ellipse(X, T.sy(0) + 1, 1.2 * r, 0.3 * r, 0, 0, TAU);
+    ctx.fill();
+    drawBall(ctx, skinId, X, Y, r, -g.rot, time);
+    ctx.restore();
+  }
+
+  /** Camera-swoop speed streaks (screen space) while the view pans to the next attempt. */
+  function drawSwoopStreaks(w, T, pal) {
+    const sw = w.swoop;
+    if (!sw) return;
+    const c = w.cam;
+    const vx = (c.x - c.px) * cfg.sim.hz * T.k; // css px / s
+    const sp = Math.abs(vx);
+    if (sp < 400) return;
+    const A = clamp((sp - 400) / 1600, 0, 1) * 0.5;
+    const len = clamp(sp * 0.09, 30, 180);
+    const dir = vx > 0 ? -1 : 1; // streaks trail opposite to the view motion
+    ctx.save();
+    ctx.lineCap = 'round';
+    const top = cssH * 0.2;
+    const band = Math.max(40, T.sy(0) - top - 20);
+    for (let i = 0; i < 9; i++) {
+      const y = top + ((i * 0.618 + 0.13) % 1) * band;
+      const x = ((i * 0.37 + time * 1.9 * (0.6 + (i % 3) * 0.2)) % 1) * (cssW + len) - len / 2;
+      ctx.strokeStyle = withAlpha('#FFFFFF', A * (0.5 + (i % 2) * 0.5));
+      ctx.lineWidth = 2 + (i % 3);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + dir * len, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Small "38 YD FG" pill painted under the tee while aiming. */
+  function drawTeeLabel(w, T, alpha, pal) {
+    if (alpha <= 0.01 || !w.yards) return;
+    const txt = `${w.yards} YD FG`;
+    const X = T.sx(w.teeX);
+    const G = T.sy(0);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = `900 13px ${UI_FONT}`;
+    const tw = ctx.measureText(txt).width;
+    const pw = tw + 20;
+    const ph = 22;
+    const cx = clamp(X, pw / 2 + 8, cssW - pw / 2 - 8);
+    const cy = G + 22;
+    if (cy + ph < cssH) {
+      // pointer up to the kick spot
+      ctx.fillStyle = 'rgba(20,28,50,0.72)';
+      ctx.beginPath();
+      const px = clamp(X, cx - pw / 2 + 10, cx + pw / 2 - 10);
+      ctx.moveTo(px - 6, cy - ph / 2 + 1);
+      ctx.lineTo(px, cy - ph / 2 - 6);
+      ctx.lineTo(px + 6, cy - ph / 2 + 1);
+      ctx.closePath();
+      ctx.fill();
+      roundRectPath(ctx, cx - pw / 2, cy - ph / 2, pw, ph, ph / 2);
+      ctx.fill();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(txt, cx, cy + 0.5);
+    }
+    ctx.restore();
+  }
+
+  /** Broadcast-style attempt banner, shown while the camera swoops to a fresh attempt. */
+  function drawAttemptBanner(w, pal) {
+    if (!bannerOn || !w.yards) return;
+    const intro = cfg.timing.introTime;
+    const total = (cfg.timing.swoopTime ?? 0.5) + intro + 0.35;
+    if (bannerT > total) return;
+    const inU = clamp(bannerT / 0.28, 0, 1);
+    const outU = clamp((bannerT - (total - 0.25)) / 0.25, 0, 1);
+    const A = Math.min(1, inU * 2) * (1 - outU);
+    if (A <= 0.01) return;
+    const slide = (1 - easeOutBack(inU)) * -cssW * 0.6 + easeOutCubic(outU) * cssW * 0.35;
+    const cx = cssW / 2 + slide;
+    const cy = Math.max(cssH * 0.3, 232);
+    const bw = Math.min(250, cssW * 0.66);
+    const bh = 58;
+    ctx.save();
+    ctx.globalAlpha = A;
+    ctx.translate(cx, cy);
+    ctx.transform(1, 0, -0.2, 1, 0, 0);
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillRect(-bw / 2 + 4, -bh / 2 + 6, bw, bh);
+    ctx.fillStyle = 'rgba(20,28,50,0.86)';
+    ctx.fillRect(-bw / 2, -bh / 2, bw, bh);
+    ctx.fillStyle = pal.accent;
+    ctx.fillRect(-bw / 2, -bh / 2, 9, bh);
+    ctx.fillStyle = pal.zone || pal.accent;
+    ctx.fillRect(-bw / 2 + 9, bh / 2 - 5, bw - 9, 5);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.translate(cx, cy);
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#FFD54F';
+    ctx.font = `900 12px ${UI_FONT}`;
+    ctx.fillText('FIELD GOAL ATTEMPT', 4, -14);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `900 27px ${UI_FONT}`;
+    ctx.fillText(`${w.yards} YARDS`, 4, 9);
+    ctx.restore();
   }
 
   // ------------------------------------------------------------------ rail (screen space)
@@ -881,32 +1087,51 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false } = {
     ctx.save();
     ctx.translate(ox, oy);
 
-    // theme decor (parallax)
-    ctx.save();
-    theme.drawDecor(ctx, { camX: cx, camY: cy, k, w: cssW, h: cssH, groundY: T.sy(0) }, pal, time);
-    ctx.restore();
-    ctx.globalAlpha = 1;
-
-    drawField(pal, T);
-
-    const pop = w.phase === 'idle' ? 1 : easeOutBack(clamp(w.shotAge / 0.42, 0, 1));
-    if (w.oldPost) {
-      drawPost(w.oldPost, 'far', pal, T);
-    }
-    drawPost(w.post, 'far', pal, T, pop);
+    // football field in broadcast perspective; theme decor stands on its far wall
     const teeA = w.phase === 'idle' || w.phase === 'intro' || w.phase === 'aim' ? 1
       : w.phase === 'fly' ? clamp(1 - w.flightTime / 0.4, 0, 1) : 0;
+    const endX = Number.isFinite(w.fieldEnd) ? w.fieldEnd : (w.post ? w.post.x : 0);
+    const fv = {
+      w: cssW, h: cssH, k, camX: cx, gy: T.sy(0), endX,
+      spot: { x: w.teeX, alpha: teeA, color: themeId === 'arcade' ? '#FFFFFF' : '#3D8BFF' },
+    };
+    const pr = fieldProjection(fv, cfg);
+    ctx.save();
+    theme.drawDecor(ctx, { camX: cx, camY: cy, k, w: cssW, h: cssH, groundY: pr.farY }, pal, time);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.save();
+    drawField(ctx, themeId, pal, fv, time, cfg);
+    ctx.restore();
+
+    const post = displayPost(w, dt);
+    drawNet(post, pal, T);
+    drawPost(post, 'far', pal, T);
+    drawGhostBall(w, T);
     drawTee(w.teeX, pal, T, teeA);
     drawCoin(w.pickup, T);
     drawTrail(T, skin);
     const ballScreen = drawBallAndShadow(w, T, a, skin);
-    if (w.oldPost) drawPost(w.oldPost, 'near', pal, T);
-    drawPost(w.post, 'near', pal, T, pop);
+    drawPost(post, 'near', pal, T);
     drawParticles(T);
     drawRings(T);
     ctx.restore();
 
+    drawSwoopStreaks(w, T, pal);
+    // attempt labels: banner while swooping to a fresh attempt, tee pill while aiming
+    if (w.shot !== lastShot) {
+      lastShot = w.shot;
+      bannerT = 0;
+      bannerOn = !!w.swoop;
+    } else if (dt > 0) {
+      bannerT += dt;
+    }
+    const labelA = w.phase === 'aim' ? 1
+      : w.phase === 'intro' && !w.swoop ? easeInOut(clamp(w.introT / cfg.timing.introTime, 0, 1))
+        : w.phase === 'fly' ? clamp(1 - w.flightTime / 0.25, 0, 1) : 0;
+    drawTeeLabel(w, T, labelA, pal);
     drawRail(w, { x: ballScreen.x, y: ballScreen.y }, a, pal);
+    drawAttemptBanner(w, pal);
 
     if (flash > 0.001) {
       ctx.fillStyle = withAlpha(flashColor, flash);

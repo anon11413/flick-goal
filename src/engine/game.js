@@ -4,9 +4,15 @@
 // The shell calls step(1 / CONFIG.sim.hz) from a fixed-timestep loop; the engine
 // never reads wall-clock time. All flight physics uses physics.stepFlight at the
 // same dt the solver used, so a tap inside the measured band always scores.
+//
+// Field model (SPEC §8.1): the goal post always stands on the END LINE at world
+// x = world.fieldEnd. Every shot is a fresh field-goal attempt: the solver's shot
+// is translated (physics is translation-invariant) so its post lands on the end
+// line and the ball is teed up d world units in front of it. Moving to a new
+// attempt is a short camera swoop (timing.swoopTime) during `intro`.
 
 import { CONFIG } from '../config.js';
-import { solveShot, mapRail, launchVelocity, stepFlight, postColliders, postReach } from './physics.js';
+import { solveShot, mapRail, launchVelocity, stepFlight, postColliders, postReach, yardsOf } from './physics.js';
 
 export const PHASES = ['idle', 'intro', 'aim', 'fly', 'settle', 'miss', 'over'];
 
@@ -17,6 +23,30 @@ const TAU = Math.PI * 2;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, u) => a + (b - a) * u;
 const easeInOut = (u) => (u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2);
+/**
+ * Swoop ease: soft start (zero initial speed) but front-loaded like an ease-out, so the
+ * camera visibly leaves at once (half the move is done by u ~ 0.3), then glides in.
+ */
+const easeSwoop = (u) => 1 - Math.pow(1 - u, 4) * (1 + 4 * u);
+
+/** Ball farther than this from the new tee => a fresh ball is teed up and the camera swoops. */
+const SWOOP_DIST = 120;
+/** Mid-swoop zoom-out (fraction) so the move reads as a camera swoop, not a slide. */
+const SWOOP_DIP = 0.12;
+/** Longest settle (s) after a goal before the swoop, even if the ball is still dropping. */
+const SETTLE_CAP = 0.9;
+
+/**
+ * Translate a solved shot along x (the solver's physics only depends on relative
+ * positions, so the measured band and every guarantee carry over unchanged).
+ */
+export function shiftShot(shot, dx) {
+  if (!dx) return shot;
+  shot.teeX += dx;
+  shot.postX += dx;
+  if (shot.pickup) shot.pickup.x += dx;
+  return shot;
+}
 
 export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   const P = cfg.physics;
@@ -24,6 +54,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   const V = cfg.view;
   const R = P.ballRadius;
   const reach = postReach(cfg);
+  const FLD = cfg.field;
   const listeners = new Map();
 
   // ---- viewport ----
@@ -46,6 +77,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   let clockLowSent = false;
   let missReason = null;
   let settleT = 0;
+  let landT = 0; // seconds since the first landing, during settle
   let missT = 0;
   let glide = null; // {x, y, rot} ball position at the start of intro (eases onto the tee)
   let lastBox = null;
@@ -54,9 +86,14 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   const world = {
     phase: 'idle',
     shot: null,
-    post: null,       // {x, bar, top} current post (colliders cached in _cols)
-    oldPost: null,    // previous post, drawn while it scrolls away (not collidable)
+    post: null,       // {x, bar, top} current post (colliders cached in _cols); x === fieldEnd
+    oldPost: null,    // unused since posts stay on the end line (kept for the world contract)
     teeX: 0,
+    fieldEnd: null,   // world x of the end line (goal post); fixed for the whole session
+    yards: 0,         // current attempt length in whole yards (tee -> end line)
+    swoop: null,      // {t, dur, from: {cx, cy, zoom}} camera swoop to a fresh attempt (during intro)
+    oldBall: null,    // {x, y, rot} the previous ball, fading out while the camera swoops away
+    freshBall: false, // the ball on the tee was teed up fresh (no glide) this intro
     marker: { t: 0, pt: 0, dir: 1, locked: false },
     ball: { x: 0, y: R, vx: 0, vy: 0, rot: TEE_ROT, px: 0, py: R, prot: TEE_ROT, sx: 1, sy: 1, rolling: false, resting: true },
     cam: { x: 0, y: 0, zoom: 1, px: 0, py: 0, pzoom: 1 },
@@ -67,7 +104,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     shotAge: 0,       // sim seconds since the current post appeared (pop-in)
     introT: 0,
     flightTime: 0,    // sim seconds since the flick (0 on the tee)
-    flight: { collided: false, scored: false, pending: null, reachedPost: false, crossedAbove: false, landed: false },
+    flight: { collided: false, scored: false, pending: null, reachedPost: false, crossedAbove: false, landed: false, netHit: false },
     score: 0,
     made: 0,
     streak: 0,
@@ -155,13 +192,29 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     }
   }
 
+  /**
+   * After a goal: keep the end zone, post and kicking net framed (the net catches the
+   * ball), widened only if the ball somehow ends up elsewhere.
+   */
   function postGoalBox() {
     const b = world.ball;
-    return { minX: b.x - 200, maxX: b.x + 200, minY: -V.groundPad, maxY: Math.max(b.y + 120, 380) };
+    const px = world.post ? world.post.x : b.x;
+    return {
+      minX: Math.min(b.x - 160, px - 190),
+      maxX: Math.max(b.x + 120, px + FLD.netOffset + 90),
+      minY: -V.groundPad,
+      maxY: Math.max(b.y + 120, 380),
+    };
+  }
+
+  /** World x past which a ball has flown clean out of the stadium (camera stops chasing it). */
+  function stadiumBackX() {
+    return world.post ? world.post.x + FLD.standsOffset + FLD.standsDepth : Infinity;
   }
 
   function clampBallInView() {
     const b = world.ball;
+    if (b.x - R > stadiumBackX()) return; // out of the stadium: let it sail out of shot
     const c = world.cam;
     const m = R + V.ballMargin;
     const w = viewW(c.zoom);
@@ -172,8 +225,33 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     if (b.y - m < c.y) c.y = b.y - m;
   }
 
+  /** Camera view-centre + zoom for a bottom-left camera position (used by the swoop tween). */
+  function centreOf(x, y, z) {
+    return { cx: x + viewW(z) / 2, cy: y + viewH(z) / 2, zoom: z };
+  }
+
+  function updateSwoop() {
+    const sw = world.swoop;
+    const B = aimBox();
+    const z1 = fitZoom(B);
+    const t1 = frameAt(B, z1);
+    const to = centreOf(t1.x, t1.y, z1);
+    const u = clamp(sw.t / sw.dur, 0, 1);
+    const e = easeSwoop(u);
+    const c = world.cam;
+    const z = lerp(sw.from.zoom, to.zoom, e) * (1 - SWOOP_DIP * Math.sin(Math.PI * u));
+    c.zoom = clamp(z, V.zoomMin * (1 - SWOOP_DIP), V.zoomMax);
+    c.x = lerp(sw.from.cx, to.cx, e) - viewW(c.zoom) / 2;
+    c.y = lerp(sw.from.cy, to.cy, e) - viewH(c.zoom) / 2;
+  }
+
   function updateCamera(dt) {
     if (!world.shot) return;
+    if (world.swoop) {
+      lastBox = aimBox();
+      updateSwoop();
+      return;
+    }
     const B = currentBox();
     if (phase !== 'miss' && phase !== 'over') lastBox = B;
     const c = world.cam;
@@ -236,6 +314,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     f.reachedPost = false;
     f.crossedAbove = false;
     f.landed = false;
+    f.netHit = false;
     world.flightTime = 0;
     world.lastFlick = null;
   }
@@ -271,18 +350,38 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     m.locked = false;
   }
 
-  /** Install a freshly solved shot and enter `intro`. */
-  function beginShot(teeX, { keepOldPost = false } = {}) {
-    const shot = solveShot({ teeX, made, rng }, cfg);
-    world.oldPost = keepOldPost ? world.post : null;
+  /**
+   * Solve a fresh attempt at the current `made` and place it on the field: its post
+   * on the end line (world.fieldEnd), the tee d units in front of it. The first
+   * shot ever defines the end line with its tee at x = 0.
+   */
+  function solvePlaced() {
+    const shot = solveShot({ teeX: 0, made, rng }, cfg);
+    if (world.fieldEnd === null || !Number.isFinite(world.fieldEnd)) world.fieldEnd = shot.postX;
+    return shiftShot(shot, world.fieldEnd - shot.postX);
+  }
+
+  function installShot(shot) {
     world.shot = shot;
     world.teeX = shot.teeX;
+    world.yards = yardsOf(shot.d, cfg);
     const post = { x: shot.postX, bar: shot.bar, top: shot.top };
     post._cols = postColliders(post, cfg);
     world.post = post;
+    world.oldPost = null;
     world.pickup = shot.pickup ? { x: shot.pickup.x, y: shot.pickup.y, value: shot.pickup.value, collected: false } : null;
     world.shotAge = 0;
     world.introT = 0;
+  }
+
+  /**
+   * Install a fresh attempt and enter `intro`. A ball resting near the new tee
+   * glides onto it; otherwise (after a goal, a continue or a replay) a fresh ball
+   * is teed up and the camera swoops to the new spot while the old ball fades.
+   */
+  function beginShot() {
+    const shot = solvePlaced();
+    installShot(shot);
     pickMarkerStart(shot);
     resetFlight();
     clockMax = shot.clock;
@@ -292,12 +391,25 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     settleT = 0;
     missT = 0;
     const b = world.ball;
-    b.vx = 0;
-    b.vy = 0;
-    b.rolling = false;
-    b.resting = true;
-    glide = { x: b.x, y: b.y, rot: nearestAngle(b.rot, TEE_ROT) };
-    b.rot = b.prot = glide.rot;
+    const far = Math.hypot(b.x - shot.teeX, b.y - R) > SWOOP_DIST;
+    world.oldBall = null;
+    world.swoop = null;
+    world.freshBall = false;
+    if (far) {
+      const c = world.cam;
+      world.oldBall = { x: b.x, y: b.y, rot: b.rot };
+      world.swoop = { t: 0, dur: Math.max(0.05, TM.swoopTime ?? 0.5), from: centreOf(c.x, c.y, c.zoom) };
+      world.freshBall = true;
+      placeBallOnTee(shot.teeX);
+      glide = null;
+    } else {
+      b.vx = 0;
+      b.vy = 0;
+      b.rolling = false;
+      b.resting = true;
+      glide = { x: b.x, y: b.y, rot: nearestAngle(b.rot, TEE_ROT) };
+      b.rot = b.prot = glide.rot;
+    }
     setPhase('intro');
   }
 
@@ -378,10 +490,67 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     }
   }
 
+  /**
+   * Behind the end line (post-resolution only; the solver never sees these): the kicking
+   * net catches anything below its top, and the end-zone stands (padded wall + rising
+   * seats) stop the rest. A ball that drops into the seats is caught by the crowd.
+   */
+  function backstop(prevX) {
+    const post = world.post;
+    if (!post) return;
+    const b = world.ball;
+    const f = world.flight;
+    const netX = post.x + FLD.netOffset;
+    const netTop = post.top + FLD.netAbove;
+    const netBottom = post.bar * FLD.netBottomFrac;
+    if (prevX <= netX - R + 0.01 && b.x > netX - R && b.y < netTop && b.y > netBottom) {
+      const impact = Math.abs(b.vx);
+      b.x = netX - R;
+      b.vx = -b.vx * 0.12;
+      b.vy = b.vy > 0 ? b.vy * 0.35 : b.vy * 0.6;
+      if (f) f.netHit = true;
+      if (impact > 30) emit('net', { impact, y: b.y });
+      return;
+    }
+    const sx = post.x + FLD.standsOffset;
+    if (b.x <= sx - R) return;
+    if (prevX <= sx - R + 0.01 && b.y < FLD.standsWallH + R) {
+      // bounce off the padded front wall of the end-zone stands
+      const impact = Math.abs(b.vx);
+      b.x = sx - R;
+      b.vx = -b.vx * 0.3;
+      if (impact > 30) emit('bounce', { kind: 'ground', impact });
+      return;
+    }
+    const back = sx + FLD.standsDepth;
+    const topH = FLD.standsWallH + FLD.standsDepth * FLD.standsRise;
+    if (prevX <= back - R + 0.01 && b.x > back - R && b.y < topH + FLD.standsBackH) {
+      // top-row facade: knock it back into the seats
+      b.x = back - R;
+      b.vx = -Math.abs(b.vx) * 0.25;
+      return;
+    }
+    if (b.x > back) return; // cleared the facade: out of the stadium
+    const seat = FLD.standsWallH + Math.max(0, b.x - sx) * FLD.standsRise;
+    if (b.x > sx && b.y <= seat + R * 0.6) {
+      // caught by the crowd: the ball stays in the seats
+      b.y = Math.max(b.y, seat + R * 0.6);
+      b.vx = 0;
+      b.vy = 0;
+      b.rolling = false;
+      b.resting = true;
+      if (f && !f.landed) {
+        f.landed = true;
+        if (f.scored) emit('land', { x: b.x });
+      }
+    }
+  }
+
   /** Free ball motion after the shot is resolved (post-goal, miss, over). */
   function freeStep(dt) {
     const b = world.ball;
     if (b.resting) return;
+    const prevX = b.x;
     if (b.rolling) {
       const s = Math.sign(b.vx);
       const nv = b.vx - s * P.groundFriction * dt;
@@ -391,10 +560,10 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       } else {
         b.vx = nv;
       }
-      const prevX = b.x;
       b.x += b.vx * dt;
       b.y = R;
       rollIntoStem(prevX);
+      backstop(prevX);
       spinBall(dt);
       return;
     }
@@ -402,6 +571,8 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     if (r.collisions.length) {
       for (const c of r.collisions) emit('bounce', { kind: c.kind, impact: c.impact });
     }
+    backstop(prevX);
+    if (b.resting) return;
     const impact = groundContact();
     if (impact > 0) {
       emit('bounce', { kind: 'ground', impact });
@@ -472,6 +643,16 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
 
   // ------------------------------------------------------------------ phase steps
   function stepIntro(dt) {
+    const sw = world.swoop;
+    if (sw) {
+      // Camera swoop to the new attempt: ball already teed up, rail hidden, clock frozen.
+      sw.t += dt;
+      if (sw.t >= sw.dur) {
+        world.swoop = null;
+        world.oldBall = null;
+      }
+      return;
+    }
     world.introT += dt;
     // The marker stays put while the rail fades in: taps only count from 'aim', so a marker
     // sweeping through the (visible) band during intro would eat the player's tap.
@@ -519,8 +700,11 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       // Goal resolved: the ball keeps flying and lands; no miss rules.
       freeStep(dt);
       checkPickup();
-      if (f.landed || world.flightTime > P.maxFlightTime) {
+      // settle from the first landing, or as soon as the net catches it (the ball
+      // then drops while the settle clock runs, so the swoop follows quickly)
+      if (f.landed || f.netHit || world.flightTime > P.maxFlightTime) {
         settleT = 0;
+        landT = 0;
         setPhase('settle');
       }
       return;
@@ -580,16 +764,14 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   function stepSettle(dt) {
     settleT += dt;
     freeStep(dt);
-    if (world.ball.resting || settleT >= TM.settleMax) nextShot();
+    if (world.flight.landed) landT += dt;
+    // swoop to the next attempt shortly after the first landing (hard cap SETTLE_CAP)
+    if (world.ball.resting || landT >= TM.settleMax || settleT >= SETTLE_CAP) nextShot();
   }
 
   function nextShot() {
-    const b = world.ball;
-    const post = world.post;
-    // The next tee is where the ball came to rest — but never behind the post it
-    // just went through (a doink can bounce back), so the old post stays behind.
-    const minTee = post ? post.x + 60 : b.x;
-    beginShot(Math.max(b.x, minTee), { keepOldPost: true });
+    // A fresh field-goal attempt from a new (generally longer) distance.
+    beginShot();
   }
 
   function stepMiss(dt) {
@@ -624,16 +806,14 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   function idle() {
     resetRunStats();
     lastBox = null;
+    // Attract scene: tee at x = 0, the post on the end line d in front of it.
     const shot = solveShot({ teeX: 0, made: 0, rng }, cfg);
-    world.shot = shot;
-    world.teeX = 0;
-    const post = { x: shot.postX, bar: shot.bar, top: shot.top };
-    post._cols = postColliders(post, cfg);
-    world.post = post;
-    world.oldPost = null;
+    world.fieldEnd = shot.postX;
+    installShot(shot);
     world.pickup = null;
-    world.shotAge = 0;
-    world.introT = 0;
+    world.swoop = null;
+    world.oldBall = null;
+    world.freshBall = false;
     world.marker.t = world.marker.pt = 0;
     world.marker.locked = true;
     resetFlight();
@@ -646,15 +826,17 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   }
 
   function newRun() {
-    const wasFar = !world.shot || Math.hypot(world.ball.x, world.ball.y - R) > 300;
+    const first = !world.shot;
     resetRunStats();
     lastBox = null;
-    world.oldPost = null;
-    // Nearby ball glides back onto the tee during intro; a far one teleports.
-    if (wasFar) placeBallOnTee(0);
-    beginShot(0);
-    world.oldPost = null;
-    if (wasFar) snapCamera();
+    // A ball on the menu tee glides onto the new tee; a far one (after a game over)
+    // gets a camera swoop to a freshly teed ball. The very first run starts framed.
+    beginShot();
+    if (first) {
+      world.swoop = null;
+      world.oldBall = null;
+      snapCamera();
+    }
     emit('runStart', {});
   }
 
@@ -687,13 +869,9 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     continuesUsed += 1;
     streak = 0;
     syncStats();
-    const teeX = world.shot ? world.shot.teeX : 0;
-    const b = world.ball;
-    const far = Math.hypot(b.x - teeX, b.y - R) > 400;
-    if (far) placeBallOnTee(teeX);
     lastBox = null;
-    beginShot(teeX);
-    if (far) snapCamera();
+    // Fresh attempt at the same difficulty (made unchanged), same end line.
+    beginShot();
     emit('continue', {});
     return true;
   }

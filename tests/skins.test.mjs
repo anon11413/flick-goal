@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { CONFIG } from '../src/config.js';
 import {
   BALL_SKINS, STADIUM_THEMES, drawBall, drawBallPreview, drawStadiumPreview, themePalette, mixColor, withAlpha,
+  drawField, fieldProjection,
 } from '../src/engine/skins.js';
 
 /**
@@ -123,4 +124,44 @@ test('color helpers', () => {
   assert.equal(mixColor('#000000', '#FFFFFF', 0.5), '#808080');
   assert.equal(mixColor('#FF0000', '#0000FF', 0), '#ff0000');
   assert.equal(withAlpha('#FFFFFF', 0.5), 'rgba(255,255,255,0.5)');
+});
+
+test('every stadium has a field style and an end-zone colour per palette', () => {
+  for (const [id, t] of Object.entries(STADIUM_THEMES)) {
+    assert.ok(t.field && ['grass', 'snow', 'sand', 'neon'].includes(t.field.surface), id);
+    assert.ok(Array.isArray(t.field.words) && t.field.words.length >= 1, id);
+    for (const p of t.palettes) assert.match(p.zone, /^#[0-9A-Fa-f]{6}$/, `${id}.zone`);
+  }
+});
+
+test('fieldProjection: play line keeps world scale, far side recedes, near side comes forward', () => {
+  const fv = { w: 390, h: 844, k: 0.9, camX: -40, gy: 560, endX: 300 };
+  const pr = fieldProjection(fv);
+  const [x0, y0] = pr.pt(100, 0);
+  assert.ok(Math.abs(x0 - (100 + 40) * 0.9) < 1e-9 && Math.abs(y0 - 560) < 1e-9, 'z = 0 is the exact world mapping');
+  const far = pr.pt(100, CONFIG.field.halfWidth);
+  const near = pr.pt(100, -CONFIG.field.halfWidth);
+  assert.ok(far[1] < y0 && near[1] > y0);
+  assert.ok(pr.farY < far[1], 'far wall top above the far sideline');
+  assert.ok(pr.xMin < fv.camX && pr.xMax > fv.camX + fv.w / fv.k);
+});
+
+test('drawField runs for every stadium / tier / view against a stub ctx', () => {
+  for (const id of Object.keys(STADIUM_THEMES)) {
+    for (let tier = 0; tier < 5; tier++) {
+      const pal = themePalette(id, tier);
+      for (const fv of [
+        { w: 390, h: 844, k: 1.1, camX: -60, gy: 560, endX: 280, spot: { x: 0, alpha: 1 } },
+        { w: 360, h: 640, k: 0.45, camX: -500, gy: 470, endX: 0, spot: { x: -430, alpha: 0.5 } },
+        { w: 430, h: 932, k: 0.8, camX: 250, gy: 1400, endX: 300 }, // ground below the view
+        { w: 390, h: 844, k: 0.7, camX: 12345, gy: -80, endX: 100 }, // looking far past the end line
+        { w: 96, h: 64, k: 0.32, camX: -222, gy: 45, endX: 0, tilt: 0.22, detail: 0.2 },
+      ]) {
+        const ctx = stubCtx();
+        const pr = drawField(ctx, id, pal, fv, tier * 1.3);
+        assert.ok(Number.isFinite(pr.farY));
+        if (fv.gy < fv.h && fv.camX < 1000) assert.ok(ctx.__calls.n > 20, `${id} draws the field`);
+      }
+    }
+  }
 });

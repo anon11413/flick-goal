@@ -211,3 +211,18 @@ test('rail ends miss and the extreme arc stays within camera-safe heights', () =
     assert.ok(shot.apex <= M.apexMax);
   }
 });
+
+test('solveShot distances are whole yards (tee sits on a yard mark) and read 20-60 yd', async () => {
+  const { yardsOf } = await import('../src/engine/physics.js');
+  const U = CONFIG.field.yard;
+  for (const made of [0, 5, 20, 60, 200]) {
+    for (let seed = 0; seed < 12; seed++) {
+      const shot = solveShot({ teeX: 0, made, rng: makeRng(5000 + seed * 7 + made) });
+      const yd = shot.d / U;
+      assert.ok(Math.abs(yd - Math.round(yd)) < 1e-9, `d ${shot.d}`);
+      assert.equal(yardsOf(shot.d), Math.round(yd));
+      assert.ok(yardsOf(shot.d) >= 20 && yardsOf(shot.d) <= 62, `${yardsOf(shot.d)} yd`);
+      assert.equal(shot.fallback, false);
+    }
+  }
+});
