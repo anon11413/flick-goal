@@ -154,6 +154,8 @@ function luminance(hex) {
 const runCoins = createRunCoins(); // 2x offer only ever doubles coins not doubled yet (survives Continue)
 let run = { bestAtRunStart: 0, result: null };
 let showHintThisRun = false;
+// With the rail hidden the aim cue is new even to veterans: teach the guide once per page load.
+let guideHintShown = false;
 let storeReturn = 'menu';
 let flowBusy = false; // guards async button flows (ads / interstitials)
 
@@ -443,14 +445,18 @@ game.on('runStart', () => {
   run = { bestAtRunStart: save.data.best, result: null };
   runCoins.reset();
   save.update((d) => { d.stats.gamesPlayed += 1; });
-  showHintThisRun = save.data.stats.totalGoals < 3;
+  showHintThisRun = save.data.stats.totalGoals < 3 || (!CONFIG.rail.visible && !guideHintShown);
   hud.reset();
   tier = 0;
   applyThemeChrome();
 });
 
 game.on('shotStart', (e) => {
-  hud.showHint(showHintThisRun && e.made === 0);
+  // First shot of a normal run only. A dev start-round run begins at made > 0 (like a natural
+  // run at that point), so it neither shows nor uses up the once-per-load guide hint.
+  const show = showHintThisRun && e.made === 0;
+  if (show) guideHintShown = true;
+  hud.showHint(show);
 });
 
 game.on('flick', () => {
