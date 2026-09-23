@@ -16,7 +16,9 @@
 //    No net, no stands. hud().yards = ground gained this run.
 
 import { CONFIG } from '../config.js';
-import { solveShot, mapRail, launchVelocity, stepFlight, postColliders, postReach, yardsOf } from './physics.js';
+import {
+  solveShot, mapRail, launchVelocity, stepFlight, postColliders, postReach, yardsOf, isPerfectCross,
+} from './physics.js';
 
 export const PHASES = ['idle', 'intro', 'aim', 'fly', 'settle', 'miss', 'over'];
 export const MODES = ['field', 'endless'];
@@ -119,7 +121,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     score: 0,
     made: 0,
     streak: 0,
-    lastFlick: null,  // {t, inBand, angle, power}
+    lastFlick: null,  // {t, inBand, inPerfect, angle, power}
   };
 
   // ------------------------------------------------------------------ events
@@ -325,8 +327,10 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
 
   /**
    * Dev "start round": begin the run as if `n` goals were already made. Every difficulty system
-   * keys off `made` (solver, clock, pickups) and the tier off `score`, so this matches a natural
-   * run that has made n goals. Clamped to [0, maxRound - 1]; streak / coins stay at 0.
+   * keys off `made` (solver, clock, pickups, PERFECT window) and the tier off `score`, so this
+   * matches a natural run that has made n goals (perfects score 3-6 on v2/hard-perfect, so a
+   * perfect-heavy natural run is further along the colour cycle; kick difficulty is identical).
+   * Clamped to [0, maxRound - 1]; streak / coins stay at 0.
    */
   function applyStartMade(n) {
     const maxRound = (cfg.dev && cfg.dev.maxRound) || 200;
@@ -653,13 +657,14 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     const s = world.shot;
     const f = world.flight;
     f.scored = true;
-    const hc = (s.bar + s.top) / 2;
     const clean = !f.collided;
-    const perfect = clean && Math.abs(y - hc) <= (cfg.scoring.perfectFrac * (s.top - s.bar)) / 2;
+    // v2/hard-perfect: the same predicate the solver used to measure the rail's gold strip.
+    const perfect = clean && isPerfectCross(s, y);
+    const sc = cfg.scoring;
     let points;
     if (perfect) {
       streak += 1;
-      points = Math.min(1 + streak, cfg.scoring.perfectMaxPoints);
+      points = Math.min((sc.perfectBasePoints ?? 2) + streak - 1, sc.perfectMaxPoints);
       perfects += 1;
       bestStreak = Math.max(bestStreak, streak);
     } else {
@@ -668,7 +673,11 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     }
     made += 1;
     score += points;
-    const coins = cfg.economy.coinsPerGoal + (perfect ? cfg.economy.coinsPerPerfectBonus : 0);
+    const ec = cfg.economy;
+    const streakCoins = perfect
+      ? Math.min((streak - 1) * (ec.coinsPerPerfectStreak ?? 0), ec.perfectStreakCoinCap ?? 0)
+      : 0;
+    const coins = ec.coinsPerGoal + (perfect ? ec.coinsPerPerfectBonus + streakCoins : 0);
     coinsRun += coins;
     syncStats();
     const sp = worldToScreen(s.postX, y);
@@ -983,9 +992,10 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     b.resting = false;
     resetFlight();
     const inBand = t >= s.band.lo && t <= s.band.hi;
-    world.lastFlick = { t, inBand, angle, power };
+    const inPerfect = t >= s.band.perfLo && t <= s.band.perfHi;
+    world.lastFlick = { t, inBand, inPerfect, angle, power };
     setPhase('fly');
-    emit('flick', { t, angle, power, inBand });
+    emit('flick', { t, angle, power, inBand, inPerfect });
     return true;
   }
 

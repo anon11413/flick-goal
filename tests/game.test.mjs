@@ -77,8 +77,8 @@ test('tap in the sweet band scores, then the next shot starts', () => {
   assert.equal(sc.doink, false);
   assert.equal(sc.perfect, true, 'tBest is the window centre -> perfect');
   assert.equal(sc.streak, 1);
-  assert.equal(sc.points, 2);
-  assert.equal(sc.score, 2);
+  assert.equal(sc.points, CONFIG.scoring.perfectBasePoints ?? 2); // v2/hard-perfect: 3
+  assert.equal(sc.score, CONFIG.scoring.perfectBasePoints ?? 2);
   assert.equal(sc.coins, CONFIG.economy.coinsPerGoal + CONFIG.economy.coinsPerPerfectBonus);
   assert.ok(Number.isFinite(sc.sx) && Number.isFinite(sc.sy));
   const shotsBefore = events.filter((e) => e.n === 'shotStart').length;

@@ -15,7 +15,7 @@ function deepFreeze(o) {
 }
 
 export const CONFIG = deepFreeze({
-  version: '2.0.0',
+  version: '2.0.0-hp', // v2/hard-perfect build (shown in Settings)
   debug: false, // main.js also enables debug with ?debug=1
 
   // ---- Fixed-timestep simulation (main.js owns requestAnimationFrame) ----
@@ -130,12 +130,25 @@ export const CONFIG = deepFreeze({
     reaction: 0.12,        // tau_r
     dwellMin: 0.09,        // D_min, seconds (hard)
     clockMargin: 0.15,     // added to per-shot worst-case clock bound
+    // ---- v2/hard-perfect: progressive PERFECT window (from try/hard-perfect) ----
+    // perfect iff clean && |h - hc| <= tol, where each shot's tol = max(nominal, floor):
+    //  * nominal = perfect(n) * gap / 2 -- a fraction of the goal window, 0.22 at n=0 shrinking
+    //    toward 0.06. It governs the early game.
+    //  * floor   = the smallest tol whose gold strip on the rail is crossed for at least
+    //    perfectDwell(n) seconds per pass (measured from the real sim, physics.fitPerfect). The
+    //    rail speeds up and the window narrows, so later on the floor is what binds: the strip
+    //    keeps tightening in seconds down to perfectDwellMin (~2 frames at 60 Hz) and never below.
+    // Keyed on goals made (like every other curve), so dev start round R matches kick R exactly.
+    perfect:  { start: 0.22, asym: 0.06, scale: 12 },
+    perfectDwell: { start: 0.07, asym: 0.035, scale: 30 },
+    perfectDwellMin: 0.035, // hard floor (s): perfect always stays possible
   },
 
   // ---- Scoring ----
   scoring: {
-    perfectFrac: 0.4,      // perfect if clean and |h - hc| <= perfectFrac * gap/2
-    perfectMaxPoints: 4,   // perfect points = min(1 + streak, 4); normal goal = 1
+    perfectFrac: 0.4,      // v2/standard value; v2/hard-perfect uses difficulty.perfect / perfectDwell instead
+    perfectBasePoints: 3,  // v2/hard-perfect: first perfect of a streak is worth 3 (perfects are rare)
+    perfectMaxPoints: 6,   // perfect points = min(perfectBasePoints + streak - 1, 6); normal goal = 1
     tierEvery: 10,         // background palette shifts every 10 points
   },
 
@@ -213,7 +226,12 @@ export const CONFIG = deepFreeze({
   economy: {
     startingCoins: 0,
     coinsPerGoal: 1,
-    coinsPerPerfectBonus: 1,
+    // v2/hard-perfect: perfect = 1 + 2 = 3 coins (v2/standard: 2). Perfects are rarer here, so a
+    // flat +2 keeps coins per run at ~1.1-1.2x standard for players aiming at the gold strip.
+    // Streaks pay in points, not coins (a per-streak coin bonus pushed runs to 1.5-2.3x).
+    coinsPerPerfectBonus: 2,
+    coinsPerPerfectStreak: 0,  // extra coins per perfect in a row after the first (off)
+    perfectStreakCoinCap: 0,   // cap on that streak coin bonus
     gift: { cooldownMs: 4 * HOUR, min: 25, max: 50, step: 5 },
     rewardedCoins: 25,
     rewardedCoinsCooldownMs: 3 * 60 * 1000,

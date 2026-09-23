@@ -14,6 +14,10 @@ const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 export const BAND = '#6BFFB0';
+// v2/hard-perfect: the exact PERFECT strip - a warm white core with a gold outline + glow.
+export const PERF_CORE = '#FFF7D1';
+export const PERF_EDGE = '#FFB800';
+export const PERF_GLOW = '#FFE45C';
 
 /**
  * Rail placement for a ball at screen point `ball` in a w x h css-px view: the rail starts at
@@ -94,14 +98,8 @@ export function drawRailTrack(ctx, geom, shot, t, A, opts = {}, cfg = CONFIG) {
     roundRectPath(ctx, lo, -th / 2 + 4, hi - lo, th - 8, (th - 8) / 2);
     ctx.fillStyle = withAlpha(BAND, ba);
     ctx.fill();
-    const plo = (Number.isFinite(band.perfLo) ? band.perfLo : band.lo) * L;
-    const phi = (Number.isFinite(band.perfHi) ? band.perfHi : band.hi) * L;
-    if (phi - plo > 2) {
-      roundRectPath(ctx, plo, -th / 2 + 7.5, phi - plo, th - 15, (th - 15) / 2);
-      ctx.fillStyle = withAlpha('#F0FFF6', Math.min(1, ba * 1.2));
-      ctx.fill();
-    }
   }
+  if (Number.isFinite(band.perfLo) && Number.isFinite(band.perfHi)) drawPerfectStrip(ctx, band, L, th, time);
   // band edge brackets: fixed opacity, poking out above and below the track
   const eh = th / 2 + 6;
   ctx.lineCap = 'round';
@@ -142,6 +140,48 @@ export function drawRailTrack(ctx, geom, shot, t, A, opts = {}, cfg = CONFIG) {
   ctx.fillStyle = mcol;
   ctx.fill();
   ctx.restore();
+}
+
+/**
+ * v2/hard-perfect: the exact sim-measured PERFECT window (physics.measurePerfect) on the rail
+ * (rail-local coords: x along the track, track centred on y = 0). Unlike the green fill it never
+ * fades. Everything gold stays strictly inside [perfLo, perfHi] so what looks gold IS perfect: the
+ * pulsing glow only extends above / below the track and the edge stroke is inset.
+ */
+function drawPerfectStrip(ctx, band, L, th, time) {
+  const plo = band.perfLo * L;
+  const phi = band.perfHi * L;
+  const pw = Math.max(0.5, phi - plo);
+  roundRectPath(ctx, plo, -th / 2 - 3, pw, th + 6, Math.min(pw / 2, 4));
+  ctx.fillStyle = withAlpha(PERF_GLOW, 0.3 + 0.12 * Math.sin(time * 7));
+  ctx.fill();
+  roundRectPath(ctx, plo, -th / 2 + 3, pw, th - 6, Math.min(pw / 2, (th - 6) / 2));
+  ctx.fillStyle = PERF_CORE;
+  ctx.fill();
+  if (pw > 3) {
+    roundRectPath(ctx, plo + 1, -th / 2 + 4, pw - 2, th - 8, Math.min((pw - 2) / 2, (th - 8) / 2));
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = PERF_EDGE;
+    ctx.stroke();
+  }
+  // small gold star under the track marks the spot (the needle's cap sits above it)
+  const cx = (plo + phi) / 2;
+  const cy = th / 2 + 10;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? 2.8 : 6.5;
+    const a = -Math.PI / 2 + (i * Math.PI) / 5;
+    const px = cx + Math.cos(a) * r;
+    const py = cy + Math.sin(a) * r;
+    if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(80,50,0,0.35)';
+  ctx.stroke();
+  ctx.fillStyle = PERF_EDGE;
+  ctx.fill();
 }
 
 /**

@@ -473,6 +473,9 @@ button.coin-pill { cursor: pointer; padding-right: 4px; min-height: 44px; }
 }
 .pop-text.perfect { font-size: 46px; color: #FFE45C; text-shadow: 0 5px 0 #E08A00, 0 10px 18px rgba(0, 0, 0, .18); letter-spacing: .02em; }
 .pop-text.streak { font-size: 30px; background: var(--red); padding: 2px 16px; border-radius: 999px; text-shadow: 0 2px 0 rgba(0, 0, 0, .2); box-shadow: 0 4px 0 #d53d43; }
+/* v2/hard-perfect: streak perfects get a bigger, golder show */
+.pop-text.perfect.big { font-size: 58px; color: #FFE45C; text-shadow: 0 6px 0 #E08A00, 0 0 20px rgba(255, 184, 0, .75), 0 12px 20px rgba(0, 0, 0, .22); }
+.pop-text.streak.hot { background: #FFB800; color: #fff; box-shadow: 0 4px 0 #C77F00, 0 0 18px rgba(255, 200, 61, .7); }
 .pop-text.doink { font-size: 38px; text-shadow: 0 5px 0 var(--accent); }
 .pop-text.plus { font-size: 30px; }
 .pop-text.coin-plus-text { font-size: 26px; color: #FFE45C; text-shadow: 0 3px 0 #C77F00; }

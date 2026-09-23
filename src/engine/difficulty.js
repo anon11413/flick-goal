@@ -42,6 +42,18 @@ export function barRange(n, cfg = CONFIG) {
 /** Opacity of the sweet-band glow on the rail (fades as the player improves). */
 export function bandAlpha(n, cfg = CONFIG) { return curve(cfg.difficulty.bandAlpha, n); }
 
+/**
+ * v2/hard-perfect: nominal PERFECT window for goal count n, as a fraction of gap/2 (perfect iff
+ * clean and |h - hc| <= perfectFrac(n) * gap / 2). Shrinks asymptotically with goals made. The
+ * solver may widen a shot's window so the rail strip keeps at least perfectDwell(n) of dwell.
+ */
+export function perfectFrac(n, cfg = CONFIG) { return curve(cfg.difficulty.perfect, n); }
+
+/** v2/hard-perfect: minimum seconds the marker spends inside the PERFECT strip on one pass. */
+export function perfectDwell(n, cfg = CONFIG) {
+  return Math.max(cfg.difficulty.perfectDwellMin, curve(cfg.difficulty.perfectDwell, n));
+}
+
 /** D(n) = W(n) / v(n): seconds the marker spends inside the band on one pass. */
 export function dwell(n, cfg = CONFIG) { return bandWidth(n, cfg) / speed(n, cfg); }
 
@@ -59,6 +71,8 @@ export function params(n, cfg = CONFIG) {
     barMax: br.max,
     bandAlpha: bandAlpha(n, cfg),
     dwell: dwell(n, cfg),
+    perfectFrac: perfectFrac(n, cfg),
+    perfectDwell: perfectDwell(n, cfg),
   };
 }
 
@@ -67,7 +81,9 @@ export function params(n, cfg = CONFIG) {
  * Rules (SPEC §4.1):
  *   dwell:  W(n) * widthTolLo / v(n) >= dwellMin   (worst accepted measured band)
  *   clock:  L(n) >= reaction + 1 / v(n) + dwellMin
- *   monotone: speed & distance non-decreasing; band, clock, gap, bandAlpha non-increasing
+ *   perfect: perfectDwell(n) >= perfectDwellMin, and it fits inside the band's dwell
+ *   monotone: speed & distance non-decreasing; band, clock, gap, bandAlpha, perfectFrac,
+ *             perfectDwell non-increasing
  * @returns {{ok: boolean, failures: Array<{n: number, rule: string}>}}
  */
 export function checkSchedule(maxN = 500, cfg = CONFIG) {
@@ -82,6 +98,9 @@ export function checkSchedule(maxN = 500, cfg = CONFIG) {
       if (!(p.band * tolLo / p.speed >= d.dwellMin)) failures.push({ n, rule: 'dwell' });
       if (!(p.clock >= d.reaction + 1 / p.speed + d.dwellMin)) failures.push({ n, rule: 'clock' });
       if (!(p.speed > 0 && p.band > 0 && p.band <= 1)) failures.push({ n, rule: 'range' });
+      if (!(p.perfectDwell >= d.perfectDwellMin)) failures.push({ n, rule: 'perfectDwell' });
+      if (!(p.perfectDwell <= p.band * tolLo / p.speed)) failures.push({ n, rule: 'perfectDwell:band' });
+      if (!(p.perfectFrac > 0 && p.perfectFrac < 1)) failures.push({ n, rule: 'range:perfect' });
       if (prev) {
         if (p.speed < prev.speed - EPS) failures.push({ n, rule: 'monotone:speed' });
         if (p.distance < prev.distance - EPS) failures.push({ n, rule: 'monotone:distance' });
@@ -89,6 +108,8 @@ export function checkSchedule(maxN = 500, cfg = CONFIG) {
         if (p.clock > prev.clock + EPS) failures.push({ n, rule: 'monotone:clock' });
         if (p.gap > prev.gap + EPS) failures.push({ n, rule: 'monotone:gap' });
         if (p.bandAlpha > prev.bandAlpha + EPS) failures.push({ n, rule: 'monotone:bandAlpha' });
+        if (p.perfectFrac > prev.perfectFrac + EPS) failures.push({ n, rule: 'monotone:perfectFrac' });
+        if (p.perfectDwell > prev.perfectDwell + EPS) failures.push({ n, rule: 'monotone:perfectDwell' });
       }
       prev = p;
     }

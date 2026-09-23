@@ -319,7 +319,8 @@ export function createStore(app) {
     },
     h('div.hero-preview', canvas, !it.owned ? h('span.card-lock', { html: icon('lock') }) : null),
     h('div.hero-title', 'AIM SLIDER'),
-    h('div.hero-text', 'See the power slider with the green zone on every kick. Switch it on or off any time.'),
+    // v2/hard-perfect: the slider is the only place the exact gold PERFECT zone is shown
+    h('div.hero-text', 'See the power slider with the green zone and the gold PERFECT zone on every kick. Switch it on or off any time.'),
     action,
     it.owned && it.active ? h('span.card-badge', { html: icon('check') }) : null);
     hero.addEventListener('click', () => onUpgrade(it, hero));

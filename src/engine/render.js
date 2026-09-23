@@ -25,7 +25,7 @@ import { stadiumInfo } from './stadiums.js';
 import { getStyle } from './styles/index.js';
 import { createLayers, defaultMakeCanvas } from './layers.js';
 import { createQualityMonitor } from './quality.js';
-import { railGeometry, drawRailTrack, drawGuideDots } from './aimDraw.js';
+import { railGeometry, drawRailTrack, drawGuideDots, PERF_EDGE, PERF_GLOW } from './aimDraw.js';
 import { railFade } from '../aimAssist.js';
 import { checkSchedule, dwell } from './difficulty.js';
 import { TEE_ROT } from './game.js';
@@ -103,6 +103,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
   let squash = null; // {along, across, t, dur, angle|null}
   let markerPop = 0;
   let lockColor = null;
+  const timers = [];      // v2/hard-perfect: delayed cosmetic bursts (streak fireworks), advanced with dt
   const trail = [];
   let fxAcc = 0;
   const postShow = { ref: null, bar: 0, top: 0, fromBar: 0, fromTop: 0, t: 1 };
@@ -238,7 +239,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
       const b = game.world.ball;
       setSquash(1.25, 0.8, 0.2, Math.atan2(b.vy, b.vx));
       markerPop = 1;
-      lockColor = e.inBand ? '#39D98A' : '#FF5A5F';
+      lockColor = e.inPerfect ? PERF_EDGE : e.inBand ? '#39D98A' : '#FF5A5F';
       trail.length = 0;
       styleFx('flick', e);
     }),
@@ -260,12 +261,28 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
       const s = w.shot;
       const y = s ? (s.bar + s.top) / 2 : ballPos().y;
       if (e.perfect) {
-        confetti(x, y, 60, 1.15);
-        starBurst(x, y, 10);
-        ring(x, y, 0.45, 10, 130, '#FFFFFF', 6);
-        ring(x, y, 0.5, 6, 90, '#FFE45C', 4, -0.08);
-        doFlash(0.25);
-        shake(8, 0.25);
+        // v2/hard-perfect: perfects are rare, so the celebration grows with the streak (1..4+).
+        const lvl = clamp(e.streak | 0, 1, 4);
+        confetti(x, y, 60 + 24 * (lvl - 1), 1.15 + 0.12 * (lvl - 1));
+        starBurst(x, y, 10 + 4 * (lvl - 1));
+        ring(x, y, 0.45, 10, 130 + 30 * (lvl - 1), '#FFFFFF', 6);
+        ring(x, y, 0.5, 6, 90 + 25 * (lvl - 1), PERF_GLOW, 4, -0.08);
+        if (lvl >= 2) {
+          ring(x, y, 0.6, 20, 210 + 30 * (lvl - 2), PERF_EDGE, 7, -0.18);
+          sparkle(x, y, 18 + 6 * lvl, PERF_GLOW);
+        }
+        for (let i = 0; lvl >= 3 && i < lvl - 1; i++) {
+          // firework pops around the goal
+          const fx = x + rand(-120, 120);
+          const fy = y + rand(40, 160);
+          timers.push({ t: 0.16 + i * 0.14, fn: () => {
+            starBurst(fx, fy, 8);
+            sparkle(fx, fy, 10, i % 2 ? '#FFFFFF' : PERF_GLOW);
+            ring(fx, fy, 0.35, 4, 60, i % 2 ? PERF_GLOW : '#FFFFFF', 4);
+          } });
+        }
+        doFlash(0.25 + 0.04 * (lvl - 1), lvl >= 2 ? '#FFF3B0' : '#FFFFFF');
+        shake(8 + 2 * (lvl - 1), 0.25 + 0.05 * (lvl - 1));
       } else {
         confetti(x, y, 24);
         ring(x, y, 0.35, 8, 70, '#FFFFFF', 4);
@@ -299,6 +316,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
     game.on('runStart', (e) => {
       trail.length = 0;
       lockColor = null;
+      timers.length = 0;
       if (e && e.cut) wipeT = 0;
       // Adaptive (pro) styles: a dev start-round run opens straight on its tier palette, whose
       // layers were pre-warmed on the menu (no cross-dissolve, no layer builds). Retro unchanged.
@@ -316,6 +334,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
       postShow.ref = null;
       trail.length = 0;
       particles.length = 0;
+      timers.length = 0;
       rings.length = 0;
       glows.length = 0;
       styleFx('modeChange', e);
@@ -344,6 +363,14 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
     for (let i = glows.length - 1; i >= 0; i--) {
       glows[i].t += dt;
       if (glows[i].t >= glows[i].dur) glows.splice(i, 1);
+    }
+    for (let i = timers.length - 1; i >= 0; i--) {
+      timers[i].t -= dt;
+      if (timers[i].t <= 0) {
+        const fn = timers[i].fn;
+        timers.splice(i, 1);
+        fn();
+      }
     }
     if (shakeT < shakeDur) shakeT += dt;
     netFx.t += dt;
@@ -661,6 +688,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
       `n ${s.made}  v ${s.speed.toFixed(3)}  W ${s.targetWidth.toFixed(3)}/${s.band.width.toFixed(3)}`,
       `D ${(s.band.width / s.speed).toFixed(3)}s (sched ${dwell(s.made, cfg).toFixed(3)})  L ${s.clock.toFixed(2)}s`,
       `band [${s.band.lo.toFixed(3)}, ${s.band.hi.toFixed(3)}]  s ${s.s.toFixed(2)}  fallback ${s.fallback}`,
+      `perfect ${((s.band.perfHi - s.band.perfLo) / s.speed).toFixed(3)}s  tol ${(s.perfectTol ?? 0).toFixed(1)}u (nominal ${(s.perfectNominalTol ?? 0).toFixed(1)})`,
       `phase ${w.phase}  mode ${w.mode}  cam z ${w.cam.zoom.toFixed(2)}  tier ${w.tier}`,
       `style ${styleId}/${themeId}  aim ${aimLatched}  q ${q.tier}  layers ${q.layersBuilt}/${q.layersBuiltInFlight}`,
     ];
@@ -1001,6 +1029,7 @@ export function createRenderer(canvas, game, { cfg = CONFIG, debug = false, crea
     rings.length = 0;
     glows.length = 0;
     trail.length = 0;
+    timers.length = 0;
     layers.clear();
   }
 

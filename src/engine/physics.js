@@ -6,7 +6,9 @@
 // exact: any tap inside [band.lo, band.hi] is a clean goal in the real game.
 
 import { CONFIG } from '../config.js';
-import { bandWidth, speed, shotClock, distance, gap, barRange, bandAlpha } from './difficulty.js';
+import {
+  bandWidth, speed, shotClock, distance, gap, barRange, bandAlpha, perfectFrac, perfectDwell,
+} from './difficulty.js';
 
 const DEG = Math.PI / 180;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -329,8 +331,9 @@ export function measureBand(shot, cfg = CONFIG) {
     if (!clean(t) || !simClean(t)) return null;
   }
 
-  // 5. Perfect sub-band (analytic |h - hc| <= perfectFrac * gap/2) around tBest.
-  const pTol = cfg.scoring.perfectFrac * (shot.top - shot.bar) / 2;
+  // 5. Perfect sub-band (analytic |h - hc| <= perfectTol) around tBest. A quick estimate only:
+  //    solveShot replaces it with the exact sim-measured strip (fitPerfect / measurePerfect).
+  const pTol = shot.perfectTol ?? perfectFrac(shot.made ?? 0, cfg) * (shot.top - shot.bar) / 2;
   const isPerf = (i) => Number.isFinite(hs[i]) && Math.abs(hs[i] - hc) <= pTol;
   let pa = iBest;
   while (pa > 0 && isPerf(pa - 1)) pa--;
@@ -340,6 +343,86 @@ export function measureBand(shot, cfg = CONFIG) {
   const perfHi = clamp(pb / N, lo, hi);
 
   return { lo, hi, width: hi - lo, tBest, perfLo, perfHi };
+}
+
+// v2/hard-perfect: the game's perfect predicate is this much (world units) more lenient than the
+// solver's. The FIELD mode slides every solved shot onto the end line (game.shiftShot); physics is
+// translation-invariant but floats are not quite, so without it a tap bisected onto the very edge
+// of the gold strip could land ~1e-12 u outside. 1e-6 u is invisible (a 2e-3 t step is ~1 u).
+const PERFECT_SLACK = 1e-6;
+
+/**
+ * v2/hard-perfect: PERFECT predicate shared by the game and the solver - a clean goal whose
+ * crossing height (the interpolated crossY of the fixed-step sim) is within shot.perfectTol of
+ * the window centre.
+ */
+export function isPerfectCross(shot, crossY) {
+  return Number.isFinite(crossY)
+    && Math.abs(crossY - (shot.bar + shot.top) / 2) <= shot.perfectTol + PERFECT_SLACK;
+}
+
+/**
+ * Measure the PERFECT strip of a shot on the rail from the real fixed-step simulation: the
+ * contiguous run of t around band.tBest where the sim is clean AND |crossY - hc| <= tol. Edges
+ * are bisected to ~1e-10, so for any t in [perfLo, perfHi] the live game (same stepFlight, same
+ * dt, same start state) scores a PERFECT. The strip is clamped to the clean band [lo, hi].
+ * @returns {{perfLo, perfHi}}  (perfLo === perfHi when tBest itself is not perfect)
+ */
+export function measurePerfect(shot, band, tol, cfg = CONFIG) {
+  const post = postOf(shot);
+  post._cols = postColliders(post, cfg);
+  const hc = (shot.bar + shot.top) / 2;
+  const perf = (t) => {
+    const r = simulateWithPost(shot, post, t, cfg);
+    return r.clean && Math.abs(r.crossY - hc) <= tol;
+  };
+  const t0 = band.tBest;
+  if (!perf(t0)) return { perfLo: t0, perfHi: t0 };
+  const edge = (dir) => {
+    const lim = dir < 0 ? band.lo : band.hi;
+    let good = t0;
+    let bad = null;
+    let step = 0.002;
+    while (bad === null) {
+      const t = dir < 0 ? Math.max(lim, good - step) : Math.min(lim, good + step);
+      if (t === good) return good; // reached the band edge: the strip is clipped by the band
+      if (perf(t)) good = t; else bad = t;
+      step *= 1.6;
+    }
+    for (let k = 0; k < 48 && Math.abs(bad - good) > 1e-10; k++) {
+      const mid = (good + bad) / 2;
+      if (perf(mid)) good = mid; else bad = mid;
+    }
+    return good;
+  };
+  return { perfLo: edge(-1), perfHi: edge(1) };
+}
+
+/**
+ * Fit the shot's PERFECT window: start from the nominal difficulty window (perfectFrac(made) *
+ * gap/2) and widen it only as far as needed so the strip's dwell (width / speed) is at least
+ * perfectDwell(made) - perfect gets progressively harder but always stays possible.
+ * Writes shot.perfectTol / perfectNominalTol and band.perfLo / perfHi.
+ */
+function fitPerfect(shot, b, cfg) {
+  const v = shot.speed;
+  const target = perfectDwell(shot.made, cfg);
+  let tol = shot.perfectTol;
+  let p = measurePerfect(shot, b, tol, cfg);
+  for (let i = 0; i < 12 && (p.perfHi - p.perfLo) / v < target; i++) {
+    const w = p.perfHi - p.perfLo;
+    tol *= w > 1e-6 ? Math.min(4, (target * v) / w) * 1.02 : 2;
+    p = measurePerfect(shot, b, tol, cfg);
+  }
+  if ((p.perfHi - p.perfLo) / v < target) {
+    // Never expected: every clean goal counts as perfect (the band dwell is >= dwellMin).
+    tol = shot.gap;
+    p = measurePerfect(shot, b, tol, cfg);
+  }
+  shot.perfectTol = tol;
+  shot.perfectNominalTol = perfectFrac(shot.made, cfg) * shot.gap / 2;
+  b.perfLo = p.perfLo;
+  b.perfHi = p.perfHi;
 }
 
 function buildShot(teeX, made, d, bar, gp, thetaC, powerC, tStar, cfg) {
@@ -352,6 +435,7 @@ function buildShot(teeX, made, d, bar, gp, thetaC, powerC, tStar, cfg) {
     band: null,
     targetWidth: bandWidth(made, cfg), speed: speed(made, cfg), clock: 0, bandAlpha: bandAlpha(made, cfg),
     apex: R + (vy * vy) / (2 * g), pickup: null, made, fallback: false,
+    perfectTol: perfectFrac(made, cfg) * gp / 2, // world units; widened per shot by fitPerfect
   };
 }
 
@@ -379,6 +463,7 @@ function finishShot(shot, b, rng, cfg) {
   const dcfg = cfg.difficulty;
   const v = shot.speed;
   shot.band = b;
+  fitPerfect(shot, b, cfg);
   // True worst-case wait on a ping-pong rail is 2*max(lo, 1-hi)/v (SPEC §6.2).
   const worst = dcfg.reaction + (2 * Math.max(b.lo, 1 - b.hi)) / v + b.width / v + dcfg.clockMargin;
   shot.clock = Math.max(shotClock(shot.made, cfg), worst);

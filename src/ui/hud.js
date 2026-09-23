@@ -129,9 +129,16 @@ export function createHud({ stage, fx, onPause, onCoinPill }) {
     const w = stage.clientWidth;
     const midY = Math.max(sp.y + 110, stage.clientHeight * 0.3);
     if (e.perfect) {
-      fx.popText('PERFECT!', w / 2, midY, 'perfect');
-      // Show the multiplier actually applied (points are capped at scoring.perfectMaxPoints).
-      if (e.streak >= 2 && e.points >= 2) setTimeout(() => fx.popText('x' + e.points, w / 2, midY + 46, 'streak'), 120);
+      // v2/hard-perfect: perfects are rare, so they get a bigger show that grows with the streak.
+      const s = e.streak | 0;
+      fx.popText('PERFECT!', w / 2, midY, s >= 2 ? 'perfect big' : 'perfect');
+      if (s >= 2) {
+        setTimeout(() => fx.popText(s + ' IN A ROW', w / 2, midY + 64, s >= 3 ? 'streak hot' : 'streak'), 120);
+        fx.confetti(w / 2, midY, Math.min(60, 16 + 10 * s), 1 + 0.08 * Math.min(s, 4));
+      }
+      if (e.coins > 0) {
+        setTimeout(() => fx.popText('+' + e.coins + ' COINS', w / 2, midY + (s >= 2 ? 112 : 50), 'coin-plus-text'), 240);
+      }
     } else if (e.doink) {
       fx.popText('DOINK!', w / 2, midY, 'doink');
     }

@@ -1,5 +1,25 @@
 # Flick Goal v2: playtest guide
 
+## This build: v2/hard-perfect (what differs from v2/standard)
+
+This branch is **v2/standard plus the harder PERFECT from `try/hard-perfect`**. Everything else is the same: modes, slider tutorial, Aim Slider upgrade, RETRO and PRO stadiums, store, developer tools, and the shared `flickgoal.save2` save. Settings shows the version as **v2.0.0-hp** so you can tell the two builds apart on the phone. Phone URL: `http://<PC IP>:8766/v2-hard-perfect/`.
+
+| | v2/standard | v2/hard-perfect |
+|---|---|---|
+| PERFECT window | 40% of the goal window, every kick (about 0.42 s at kick 1, 0.09 s late) | Shrinks with goals made: about 1/3 of the green zone at kick 1 (0.235 s), 0.07 s by about 10 goals, 0.045 s at 40, never below **0.035 s** (about 2 frames) |
+| On the slider | A faint white core inside the green | An exact **gold strip** with a gold star under it. It never fades, and a tap anywhere on it is always PERFECT (checked in the real simulation). The needle turns gold when you tap inside it |
+| Points | Perfect = 2, +1 per perfect in a row, max 4 | Perfect = **3**, +1 per perfect in a row, max **6**. A normal goal is still 1 |
+| Coins | Perfect = 2 coins | Perfect = **3 coins**. Streaks pay extra points, not coins, which keeps coins per run at about 1.1 to 1.2 times standard |
+| Celebration | PERFECT! and an "xN" pill | Grows with the streak: a big gold PERFECT!, an "N IN A ROW" pill (gold from 3), "+3 COINS", and extra rings, sparkles and firework pops (in both art styles) |
+| Aim Slider card | "…green zone on every kick" | "…green zone **and the gold PERFECT zone** on every kick". Only the slider shows the gold strip, so the upgrade matters more here |
+
+Notes:
+- The gold strip shows whenever the slider shows: kick 1 ever, early in kick 2 (while it fades), with the Aim Slider upgrade, or with DEVELOPER → Slider: force on. Without the slider you can still get a PERFECT by timing the guide dots, but it's much harder. That is intended for this build.
+- `try/hard-perfect`'s free Settings toggle for "Aim slider" is **not** ported. v2 sells the slider for 10,000 coins.
+- The window depends on **goals made**, just like every other difficulty curve, so it is the same in FIELD GOAL and ENDLESS, and Start round R matches kick R exactly. The colour tier follows *score*. Perfects are worth 3 to 6 points here, so a run full of perfects moves through the background colours faster than a dev run started at the same round.
+- v2's aim sweep is slower than try/hard-perfect's. Early strips are therefore a bit longer in seconds (0.235 s vs 0.188 s at kick 1) but are the same share of the green zone. From about 15 goals the 0.035 s floor sets the limit and the timings match exactly. To make early perfects harder, lower `difficulty.perfect.start`.
+- Try it quickly: `?round=40` (dev mode) with the Aim Slider owned or DEVELOPER → Slider: force on. You'll see the tight late-game gold strip in both modes.
+
 ## Run it locally
 
 The game is static files with no build step. Serve the repo root with any static server:
@@ -152,8 +172,10 @@ All numbers live in one file. Edit it, then reload.
 | | `difficulty.distance`, `gap`, `barHeight` | Kick distance, goal window height, crossbar height ramp |
 | | `difficulty.bandAlpha` | How visible the slider's green fill stays (0.95 fading to 0.45) |
 | | `difficulty.dwellMin`, `reaction` | "Always beatable" guarantees (MATH.md). `npm test` fails if a change breaks them, in both modes |
-| Scoring | `scoring.perfectFrac`, `perfectMaxPoints`, `tierEvery` | PERFECT window size, streak points cap, background colour change every N points |
-| Coins | `economy.coinsPerGoal`, `coinsPerPerfectBonus`, `pickups.chance`, `pickups.value` | Coin earn rate |
+| Scoring | `difficulty.perfect` `{start, asym, scale}` | v2/hard-perfect PERFECT window as a fraction of gap/2: 0.22 at the start, shrinking toward 0.06 with goals made (sets the early game). `scoring.perfectFrac` is only used on v2/standard |
+| | `difficulty.perfectDwell`, `perfectDwellMin` | Per-kick floor, in seconds, that the needle spends in the gold strip: 0.07 s tightening toward 0.035 s, never below `perfectDwellMin`. It takes over after about 8 to 15 goals. `npm test` enforces it for rounds 0 to 200 |
+| | `scoring.perfectBasePoints`, `perfectMaxPoints`, `tierEvery` | First perfect is worth 3, +1 per perfect in a row, capped at 6. The background colour changes every N points |
+| Coins | `economy.coinsPerGoal`, `coinsPerPerfectBonus`, `coinsPerPerfectStreak`, `perfectStreakCoinCap`, `pickups.chance`, `pickups.value` | Coin earn rate (hard-perfect: a perfect pays 1 + 2 = 3 coins; the per-streak coin bonus is off) |
 | | `economy.gift` `{cooldownMs, min, max, step}` | Free gift (every 4 h, 25-50 coins) |
 | | `economy.rewardedCoins`, `rewardedCoinsCooldownMs` | "Watch ad for coins" amount and cooldown |
 | | `economy.continuesPerRun` | Continues per run (via rewarded ad) |
