@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Flick Goal app icon: sky tile, yellow goal post, football mid-flight. Content kept inside the
+       maskable safe zone (central 80%). -->
+  <rect width="512" height="512" rx="112" fill="#4FC3F7"/>
+  <circle cx="400" cy="120" r="150" fill="#6FD0F9"/>
+  <path d="M0 404h512v108H0z" fill="#46C46E"/>
+  <path d="M0 404h512v20H0z" fill="#3AAE5F"/>
+  <!-- goal post -->
+  <g stroke-linecap="round" fill="none">
+    <path d="M318 404V300" stroke="#E0A800" stroke-width="22"/>
+    <path d="M250 300h136" stroke="#FFD21F" stroke-width="22"/>
+    <path d="M250 300V132M386 300V132" stroke="#FFD21F" stroke-width="22"/>
+    <path d="M244 300V140" stroke="#fff" stroke-opacity=".45" stroke-width="5"/>
+  </g>
+  <path d="M250 122l-22 16 22 6z M386 122l-22 16 22 6z" fill="#FF8A3D"/>
+  <!-- flight trail -->
+  <path d="M98 372C132 266 190 212 262 196" stroke="#fff" stroke-opacity=".55" stroke-width="12" stroke-linecap="round" stroke-dasharray="2 26" fill="none"/>
+  <!-- football -->
+  <g transform="translate(300 210) rotate(-32)">
+    <ellipse cx="0" cy="8" rx="78" ry="50" fill="#000" opacity=".12"/>
+    <ellipse cx="0" cy="0" rx="78" ry="50" fill="#9C4A1E"/>
+    <ellipse cx="-6" cy="-10" rx="58" ry="26" fill="#B65B27"/>
+    <path d="M-58 -30c8 20 8 40 0 60M58 -30c-8 20-8 40 0 60" stroke="#fff" stroke-width="8" stroke-linecap="round" fill="none"/>
+    <path d="M-30 0h60" stroke="#fff" stroke-width="8" stroke-linecap="round"/>
+    <path d="M-18 -11v22M-6 -11v22M6 -11v22M18 -11v22" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  </g>
+</svg>

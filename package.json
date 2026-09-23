@@ -1,0 +1,10 @@
+{
+  "name": "flick-goal",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Flick Goal - one-tap field-goal flick arcade game (no build step)",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\""
+  }
+}

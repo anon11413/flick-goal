@@ -1,0 +1,17 @@
+{
+  "name": "Flick Goal",
+  "short_name": "Flick Goal",
+  "description": "One-tap field goal arcade game. Time your flick, split the uprights, chase the streak.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#4FC3F7",
+  "theme_color": "#4FC3F7",
+  "categories": ["games", "sports"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
