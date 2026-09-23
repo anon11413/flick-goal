@@ -228,6 +228,10 @@ export const CONFIG = deepFreeze({
 
   // ---- UI ----
   ui: { themeColor: '#4FC3F7' },
+
+  // ---- Developer "start round" option (src/dev.js, src/ui/devPanel.js) ----
+  // enabled: false removes every dev access path (?round, ?dev, Settings version 5x tap) for release.
+  dev: { enabled: true, maxRound: 200 },
 });
 
 export default CONFIG;

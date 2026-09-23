@@ -41,6 +41,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
   let perfects = 0;
   let bestStreak = 0;
   let continuesUsed = 0;
+  let startMade = 0; // dev "start round": goals pre-counted at run start (0 = normal run)
   let clock = 0;
   let clockMax = 0;
   let clockLowSent = false;
@@ -224,7 +225,23 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     perfects = 0;
     bestStreak = 0;
     continuesUsed = 0;
+    startMade = 0;
     world.tier = 0;
+    syncStats();
+  }
+
+  /**
+   * Dev "start round": begin the run as if `n` goals were already made. Every difficulty system
+   * keys off `made` (solver, clock, pickups) and the tier off `score`, so this matches a natural
+   * run that has made n goals. Clamped to [0, maxRound - 1]; streak / coins stay at 0.
+   */
+  function applyStartMade(n) {
+    const maxRound = (cfg.dev && cfg.dev.maxRound) || 200;
+    startMade = clamp(Math.floor(Number(n) || 0), 0, Math.max(0, maxRound - 1));
+    if (!startMade) return;
+    made = startMade;
+    score = startMade;
+    world.tier = Math.floor(score / cfg.scoring.tierEvery);
     syncStats();
   }
 
@@ -601,6 +618,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       emit('gameover', {
         score, made, perfects, bestStreak, coinsRun, reason: missReason,
         canContinue: continuesUsed < cfg.economy.continuesPerRun,
+        startMade,
       });
     }
   }
@@ -645,9 +663,11 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     snapCamera();
   }
 
-  function newRun() {
+  /** Start a run. opts.startMade (dev "start round" - 1) pre-counts goals; omitted = normal run. */
+  function newRun({ startMade: sm = 0 } = {}) {
     const wasFar = !world.shot || Math.hypot(world.ball.x, world.ball.y - R) > 300;
     resetRunStats();
+    applyStartMade(sm);
     lastBox = null;
     world.oldPost = null;
     // Nearby ball glides back onto the tee during intro; a far one teleports.
@@ -655,7 +675,8 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     beginShot(0);
     world.oldPost = null;
     if (wasFar) snapCamera();
-    emit('runStart', {});
+    emit('runStart', { startMade });
+    if (world.tier) emit('tier', { tier: world.tier }); // started past a tier: shell recolours too
   }
 
   function tap() {
@@ -740,6 +761,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
       clockMax,
       clock01: clamp(c / cm, 0, 1),
       canContinue: phase === 'over' && continuesUsed < cfg.economy.continuesPerRun,
+      startMade,
     };
   }
 
@@ -755,6 +777,7 @@ export function createGame({ rng = Math.random, cfg = CONFIG } = {}) {
     hud,
     worldToScreen,
     get phase() { return phase; },
+    get startMade() { return startMade; },
     get world() { return world; },
     get viewport() { return { cssW, cssH, k0 }; },
   };

@@ -58,3 +58,28 @@ test('guide: every scoring window is visible as dot movement, at every score', (
     assert.ok(med >= MIN_MEDIAN_TRAVEL, `made ${made}: median tip travel ${med.toFixed(2)} px`);
   }
 });
+
+test('dev start round (try/no-slider): round R uses this branch\'s sweep curve and the same guide as R-1 goals', async () => {
+  const { createGame } = await import('../src/engine/game.js');
+  const sp = CONFIG.difficulty.speed;
+  assert.equal(sp.start, 0.40); // branch curve (base was 0.50 -> 1.10)
+  assert.equal(sp.asym, 0.95);
+  for (const round of [2, 16, 30, 50, 100, 200]) {
+    const n = round - 1;
+    const seed = 500 + round;
+    const game = createGame({ rng: makeRng(seed) });
+    game.setViewport(390, 844);
+    game.newRun({ startMade: n });
+    const shot = game.world.shot;
+    const expected = solveShot({ teeX: 0, made: n, rng: makeRng(seed) });
+    assert.equal(shot.made, n);
+    assert.equal(shot.speed, sp.asym - (sp.asym - sp.start) * Math.exp(-n / sp.scale), `R${round}: branch sweep speed`);
+    // the guide dots (the only aim cue here) are laid out exactly as for a natural shot after n goals
+    for (const t of [0, shot.band.lo, shot.band.tBest, shot.band.hi, 1]) {
+      assert.deepEqual(guideLayout(shot, t), guideLayout(expected, t), `R${round} t ${t}`);
+    }
+    const a = guideTip(shot, shot.band.lo);
+    const b = guideTip(shot, shot.band.hi);
+    assert.ok(Math.hypot(b.x - a.x, b.y - a.y) >= MIN_TIP_TRAVEL, `R${round}: scoring window visible in the dots`);
+  }
+});
