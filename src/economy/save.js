@@ -15,10 +15,14 @@ export const MAX_COINS = 999999999;
 const MAX_KICKS = 999;
 const MAX_ID_LEN = 64;
 const MAX_IDS = 200;
+/** IAP ledger limits: credited store transaction ids kept (newest last) and their max length. */
+export const MAX_TX_IDS = 500;
+const MAX_TX_LEN = 128;
+const MAX_ORPHANS = 50;
 /** Top-level keys this build owns; anything else in a save is preserved as-is (sibling builds). */
 const KNOWN_KEYS = new Set([
   'v', 'coins', 'best', 'bestYards', 'owned', 'equipped', 'settings', 'mode', 'tutorial', 'ui', 'noAds',
-  'lastGiftAt', 'lastRewardedCoinsAt', 'adCounter', 'stats', 'importedV1',
+  'lastGiftAt', 'lastRewardedCoinsAt', 'adCounter', 'stats', 'importedV1', 'iap', 'adState',
 ]);
 
 /** In-memory Storage-like object (used in tests and when localStorage is unavailable). */
@@ -75,6 +79,14 @@ export function defaultSave(cfg = CONFIG) {
     adCounter: 0,
     stats: { gamesPlayed: 0, totalGoals: 0, totalPerfects: 0, bestStreak: 0 },
     importedV1: false,
+    // In-app purchase ledger (src/platform/revenuecat.js): coin packs are credited exactly once per
+    // store transaction id. since = ledger epoch (store server time of the first purchase-history
+    // read; 0 = not read yet): history older than that is never credited to this save.
+    // orphans = rare credits made from a purchase result before its store transaction was visible.
+    // synced = the one-time silent purchase sync (No Ads after a reinstall) has run.
+    iap: { since: 0, done: [], orphans: [], synced: false },
+    // Ad pacing: cold starts (no interstitial in the first session) and last full-screen ad times.
+    adState: { sessions: 0, lastInterstitialAt: 0, lastRewardedAt: 0 },
   };
 }
 
@@ -124,6 +136,39 @@ function cleanStats(stats) {
     totalGoals: toInt(s.totalGoals, 0),
     totalPerfects: toInt(s.totalPerfects, 0),
     bestStreak: toInt(s.bestStreak, 0),
+  };
+}
+
+function cleanIap(iap) {
+  const s = isObj(iap) ? iap : {};
+  const done = [];
+  if (Array.isArray(s.done)) {
+    for (const id of s.done) {
+      if (typeof id === 'string' && id && id.length <= MAX_TX_LEN && !done.includes(id)) done.push(id);
+    }
+  }
+  const orphans = [];
+  if (Array.isArray(s.orphans)) {
+    for (const o of s.orphans) {
+      if (isObj(o) && typeof o.p === 'string' && o.p && o.p.length <= MAX_ID_LEN) {
+        orphans.push({ p: o.p, t: toInt(o.t, 0), o: typeof o.o === 'string' ? o.o.slice(0, MAX_TX_LEN) : '' });
+      }
+    }
+  }
+  return {
+    since: toInt(s.since, 0), // store server time: not clamped to this device's clock
+    done: done.slice(-MAX_TX_IDS),
+    orphans: orphans.slice(-MAX_ORPHANS),
+    synced: s.synced === true,
+  };
+}
+
+function cleanAdState(a, now) {
+  const s = isObj(a) ? a : {};
+  return {
+    sessions: toInt(s.sessions, 0),
+    lastInterstitialAt: toTime(s.lastInterstitialAt, now),
+    lastRewardedAt: toTime(s.lastRewardedAt, now),
   };
 }
 
@@ -234,6 +279,8 @@ export function migrate(raw, cfg = CONFIG, now = Date.now()) {
       adCounter: toInt(src.adCounter, 0),
       stats: cleanStats(src.stats),
       importedV1: src.importedV1 === true,
+      iap: cleanIap(src.iap),
+      adState: cleanAdState(src.adState, now),
     };
   } catch {
     return base;
@@ -351,11 +398,14 @@ export function createSaveManager({ storage, cfg = CONFIG, now = () => Date.now(
     /**
      * Wipe progress: coins, owned items (incl. upgrades), equipped, bests, farthest run, stats.
      * Keeps purchases (No Ads), settings, the gift / rewarded timers (a reset cannot farm free
-     * gifts), the slider tutorial progress, the mode-callout bookkeeping and the chosen mode.
+     * gifts), the slider tutorial progress, the mode-callout bookkeeping, the chosen mode, the
+     * purchase ledger (a reset must never re-credit old coin purchases) and the ad pacing state.
      */
     reset() {
       const keep = {
         noAds: data.noAds,
+        iap: cleanIap(data.iap),
+        adState: cleanAdState(data.adState, now()),
         settings: { ...data.settings },
         lastGiftAt: data.lastGiftAt,
         lastRewardedCoinsAt: data.lastRewardedCoinsAt,

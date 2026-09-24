@@ -62,14 +62,15 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
     });
   }
 
-  /** confirmDialog({title, message, okText, cancelText, danger}) -> Promise<boolean> */
+  /** confirmDialog({title, message, okText, cancelText (null = OK only), danger}) -> Promise<boolean> */
   function confirmDialog({ title = 'Are you sure?', message = '', okText = 'OK', cancelText = 'Cancel', danger = false, iconName = null, iconHtml = null } = {}) {
     return modal({
       label: title,
       className: danger ? 'danger' : '',
       build: (close) => {
         const ok = h('button.btn.pill' + (danger ? '.red' : '.green'), { type: 'button', onclick: () => { onClick(); close(true); } }, okText);
-        const cancel = h('button.btn.pill.white', { type: 'button', onclick: () => { onClick(); close(false); } }, cancelText);
+        // cancelText: null -> a single-button notice (OK only)
+        const cancel = cancelText == null ? null : h('button.btn.pill.white', { type: 'button', onclick: () => { onClick(); close(false); } }, cancelText);
         return h('div.dialog-body',
           iconHtml || iconName ? h('div.dialog-icon', { html: iconHtml || icon(iconName) }) : null,
           h('div.dialog-title', title),

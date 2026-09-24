@@ -213,6 +213,122 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
     return out;
   }
 
+  // ---- In-app purchase ledger (exactly-once coin grants; see src/platform/revenuecat.js) ----
+  const product = (id) => (cfg.products || []).find((it) => it.id === id) || null;
+  /** Coins a product grants (0 for No Ads / unknown ids). */
+  function productCoins(productId) {
+    const p = product(productId);
+    const n = p && p.grants ? Math.floor(Number(p.grants.coins)) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  const ledger = (d) => {
+    if (!d.iap || typeof d.iap !== 'object') d.iap = { since: 0, done: [], orphans: [], synced: false };
+    if (!Array.isArray(d.iap.done)) d.iap.done = [];
+    if (!Array.isArray(d.iap.orphans)) d.iap.orphans = [];
+    return d.iap;
+  };
+  const MAX_DONE = 500;
+  const pushDone = (l, id) => {
+    l.done.push(id);
+    if (l.done.length > MAX_DONE) l.done.splice(0, l.done.length - MAX_DONE);
+  };
+  function iapState() { return ledger(save.data); }
+  function hasProcessed(txId) { return typeof txId === 'string' && iapState().done.includes(txId); }
+
+  /**
+   * Credit a coin pack for ONE store transaction, exactly once: the "already processed?" check, the
+   * ledger entry and the coins happen in a single save.update, so racing callers (purchase result +
+   * customer-info listener + launch sync) can never double-credit. Returns the coins credited (0 when
+   * the transaction was already processed or the product grants no coins).
+   */
+  function creditPurchase({ txId, productId }) {
+    const amount = productCoins(productId);
+    if (typeof txId !== 'string' || !txId || amount <= 0) return 0;
+    let credited = 0;
+    save.update((d) => {
+      const l = ledger(d);
+      if (l.done.includes(txId)) return;
+      pushDone(l, txId);
+      d.coins += amount;
+      credited = amount;
+    });
+    if (credited) emit({ type: 'coins', delta: credited, source: 'iap', productId, txId });
+    return credited;
+  }
+
+  /** Record transaction ids as processed WITHOUT crediting (ledger baseline, orphan matches). */
+  function markProcessed(txIds) {
+    const ids = (Array.isArray(txIds) ? txIds : [txIds]).filter((id) => typeof id === 'string' && id);
+    if (!ids.length) return 0;
+    let n = 0;
+    save.update((d) => {
+      const l = ledger(d);
+      for (const id of ids) if (!l.done.includes(id)) { pushDone(l, id); n++; }
+    });
+    return n;
+  }
+
+  /** Set the ledger epoch once (store server time of the first purchase-history read). */
+  function setIapEpoch(since) {
+    const t = Math.floor(Number(since));
+    if (!Number.isFinite(t) || t <= 0 || iapState().since > 0) return false;
+    save.update((d) => { ledger(d).since = t; });
+    return true;
+  }
+
+  function setIapSynced() {
+    if (iapState().synced === true) return;
+    save.update((d) => { ledger(d).synced = true; });
+  }
+
+  /**
+   * Fallback credit straight from a purchase result whose store transaction is not visible yet:
+   * credits once per order id and remembers an orphan {p, t, o} so the matching store transaction,
+   * when it shows up, is recorded without a second credit (see resolveOrphan).
+   */
+  function creditOrphan({ productId, t, orderId }) {
+    const amount = productCoins(productId);
+    if (amount <= 0) return 0;
+    const o = typeof orderId === 'string' ? orderId : '';
+    let credited = 0;
+    save.update((d) => {
+      const l = ledger(d);
+      if (o && l.orphans.some((x) => x.o === o)) return;
+      l.orphans.push({ p: productId, t: Math.max(0, Math.floor(Number(t)) || 0), o });
+      if (l.orphans.length > 50) l.orphans.splice(0, l.orphans.length - 50);
+      d.coins += amount;
+      credited = amount;
+    });
+    if (credited) emit({ type: 'coins', delta: credited, source: 'iap', productId, txId: null });
+    return credited;
+  }
+
+  /**
+   * A store transaction that matches an orphan credit (same product, purchase time within windowMs):
+   * mark it processed and drop the orphan, WITHOUT crediting. Returns true when one matched.
+   */
+  function resolveOrphan({ txId, productId, t, windowMs = 10 * 60 * 1000 }) {
+    if (typeof txId !== 'string' || !txId) return false;
+    const l0 = iapState();
+    if (l0.done.includes(txId) || !l0.orphans.length) return false;
+    let hit = false;
+    save.update((d) => {
+      const l = ledger(d);
+      const tt = Number(t) || 0;
+      let i = -1;
+      let best = Infinity;
+      l.orphans.forEach((x, k) => {
+        const dt = Math.abs((x.t || 0) - tt);
+        if (x.p === productId && dt <= windowMs && dt < best) { best = dt; i = k; }
+      });
+      if (i < 0) return;
+      l.orphans.splice(i, 1);
+      pushDone(l, txId);
+      hit = true;
+    });
+    return hit;
+  }
+
   /** Tell listeners the whole save changed (e.g. after save.reset()). */
   function refresh() {
     emit({ type: 'reset' });
@@ -227,5 +343,7 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
     coins, addCoins, spendCoins, items, isOwned, equipped, buy, equip, upgradeActive, setUpgradeActive,
     giftStatus, claimGift, rewardedCoinsStatus, grantRewardedCoins,
     applyProduct, hasNoAds, setNoAds, refresh, on,
+    productCoins, iapState, hasProcessed, creditPurchase, markProcessed, setIapEpoch, setIapSynced,
+    creditOrphan, resolveOrphan,
   };
 }

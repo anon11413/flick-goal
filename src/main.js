@@ -20,18 +20,21 @@ import { createDevState, isDevRun, nextBest } from './dev.js';
 import { createDevPanel } from './ui/devPanel.js';
 import { sliderMode, hintFor, describeAim, AIM_SLIDER_ID } from './aimAssist.js';
 import { isMode, normalizeMode, otherMode, calloutVisible, nextCalloutState, newBadgeVisible } from './modes.js';
+import { purchaseErrorText, pendingText, restoreText, rewardedFailText } from './ui/iapText.js';
 
 const STEP = 1 / CONFIG.sim.hz;
-const params = new URLSearchParams(location.search);
+// URL flags (?qa ?debug ?ads=off ?mode ?style ?gfx ?round ?dev ...) exist only in the dev build
+// profile; release builds (web-release, android-*) ignore the query string completely.
+const SEARCH = CONFIG.allowUrlFlags ? location.search : '';
+const params = new URLSearchParams(SEARCH);
 const debug = CONFIG.debug || params.get('debug') === '1';
 const qa = debug || params.has('qa') || params.has('smoke');
 // QA switch: ?ads=off previews the game exactly as it runs with monetization.mode = 'off'.
-// (Remove or gate this before real ad SDKs ship.)
 const monCfg = params.get('ads') === 'off'
   ? { ...CONFIG, monetization: { ...CONFIG.monetization, mode: 'off' } }
   : CONFIG;
 // Developer "start round" (?round=N, ?dev=1, Settings version 5x tap); inert when cfg.dev.enabled is false.
-const dev = createDevState({ cfg: CONFIG, search: location.search });
+const dev = createDevState({ cfg: CONFIG, search: SEARCH });
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -50,8 +53,11 @@ const save = createSaveManager({ cfg: CONFIG });
 const shop = createShop({ save, cfg: CONFIG });
 const audio = createAudio({ cfg: CONFIG, enabled: save.data.settings.sound });
 const haptics = createHaptics({ cfg: CONFIG, enabled: save.data.settings.haptics });
-const mon = createMonetization({ cfg: monCfg, shop, root: overlay });
+const mon = createMonetization({ cfg: monCfg, shop, save, root: overlay });
 const dialogs = createDialogs({ root: overlay, onClick: () => haptics.pulse('tap') });
+// Full-screen ads / store sheets: silence the game while they are up; ads follow the Sound setting.
+mon.onBusyChange((b) => { if (b) audio.suspend(); else if (!document.hidden) audio.resume(); });
+mon.setMuted(!save.data.settings.sound);
 const fx = createFx({ layer: fxLayer, stage });
 
 // QA: ?mode=field|endless sets the saved mode at boot.
@@ -244,6 +250,7 @@ const app = {
   setSound(v) {
     save.update((d) => { d.settings.sound = !!v; });
     audio.setEnabled(!!v);
+    mon.setMuted(!v);
     if (v) { audio.unlock(); sfx('click'); }
   },
   toggleSound() { app.setSound(!save.data.settings.sound); return save.data.settings.sound; },
@@ -265,6 +272,8 @@ const app = {
   claimGift,
   buyNoAds,
   restorePurchases,
+  showPrivacyOptions,
+  showPurchaseResult,
   resetProgress,
 
   // modes (menu chip)
@@ -444,7 +453,9 @@ async function continueRun() {
     gameover.setBusy(false);
   }
   if (!res.rewarded) {
-    dialogs.toast('Watch the full video to continue', { kind: 'warn' });
+    const msg = rewardedFailText(res, 'continue');
+    if (msg) dialogs.toast(msg, { kind: 'warn', ms: 2400 });
+    gameover.refresh();
     return;
   }
   if (game.continueRun()) {
@@ -468,7 +479,9 @@ async function doubleCoins(btn) {
     gameover.setBusy(false);
   }
   if (!res.rewarded) {
-    dialogs.toast('Watch the full video to double your coins', { kind: 'warn' });
+    const msg = rewardedFailText(res, 'double your coins');
+    if (msg) dialogs.toast(msg, { kind: 'warn', ms: 2400 });
+    gameover.refresh();
     return;
   }
   const amount = runCoins.applyDouble();
@@ -503,19 +516,39 @@ async function claimGift(btn) {
   }
 }
 
+/**
+ * Feedback for a finished mon.iap.purchase() (menu No Ads button and the store). Coins / No Ads are
+ * already granted when res.ok. `from` = stage point the coins fly from. Returns true on success.
+ */
+function showPurchaseResult(res, from) {
+  if (res && res.ok) {
+    sfx('buy');
+    haptic('buy');
+    if (res.coins > 0) {
+      wallet.flyFrom(from || null, 8, res.coins);
+      dialogs.toast(`+${fmtNum(res.coins)} coins!`, { kind: 'ok', ms: 1600 });
+    }
+    if (res.noAds) {
+      fx.confetti(stage.clientWidth / 2, stage.clientHeight * 0.4, 44, 1.1);
+      dialogs.toast('Ads removed — thank you!', { kind: 'ok' });
+    }
+    return true;
+  }
+  if (res && res.pending) {
+    const t = pendingText(res.productId);
+    dialogs.confirmDialog({ title: t.title, message: t.message, okText: 'OK', cancelText: null, iconName: 'coin' });
+    return false;
+  }
+  const msg = purchaseErrorText(res);
+  if (msg) dialogs.toast(msg, { kind: res && res.restored ? 'ok' : 'warn', ms: 2600 });
+  return false;
+}
+
 async function buyNoAds() {
   if (flowBusy) return;
   flowBusy = true;
   try {
-    const r = await mon.iap.purchase('no_ads');
-    if (r.ok) {
-      sfx('buy');
-      haptic('buy');
-      fx.confetti(stage.clientWidth / 2, stage.clientHeight * 0.4, 44, 1.1);
-      dialogs.toast('Ads removed — thank you!', { kind: 'ok' });
-    } else if (r.error === 'already_owned') {
-      dialogs.toast('No Ads is already active');
-    }
+    showPurchaseResult(await mon.iap.purchase('no_ads'));
   } finally {
     flowBusy = false;
     menu.refresh();
@@ -527,12 +560,45 @@ async function restorePurchases() {
   flowBusy = true;
   try {
     const r = await mon.iap.restore();
-    if (r.ok && r.restored.length) dialogs.toast('Purchases restored: No Ads', { kind: 'ok' });
-    else dialogs.toast(r.ok ? 'Nothing to restore' : 'Restore failed', { kind: r.ok ? 'info' : 'warn' });
+    if (r.coins > 0) wallet.flyFrom(null, 6, r.coins);
+    const t = restoreText(r);
+    if (t) dialogs.toast(t.text, { kind: t.kind, ms: 4200 });
   } finally {
     flowBusy = false;
+    settings.refresh();
+    menu.refresh();
   }
 }
+
+/** Settings "Privacy & ad choices" (Google UMP privacy options form; shown only when required). */
+async function showPrivacyOptions() {
+  if (flowBusy) return;
+  flowBusy = true;
+  try {
+    await mon.privacy.show();
+  } finally {
+    flowBusy = false;
+    settings.refresh();
+  }
+}
+
+// Coins credited outside a purchase flow (a pending payment completed, the app was closed while
+// Google Play charged, a restore): tell the player.
+mon.iap.onGrant((g) => {
+  if (!(g && g.coins > 0)) return;
+  wallet.flyFrom(null, 8, g.coins);
+  sfx('gift');
+  dialogs.toast(`Purchase complete: +${fmtNum(g.coins)} coins`, { kind: 'ok', ms: 2600 });
+});
+// Provider state changed (consent finished, store prices loaded, No Ads synced): refresh the screen.
+mon.onChange(() => {
+  if (!router) return;
+  const r = router.current;
+  if (r === 'menu') menu.refresh();
+  else if (r === 'settings') settings.refresh();
+  else if (r === 'store' && store.refresh) store.refresh();
+  else if (r === 'gameover') gameover.refresh();
+});
 
 async function resetProgress() {
   const ok = await dialogs.confirmDialog({
@@ -651,6 +717,7 @@ game.on('miss', () => {
 });
 
 game.on('gameover', (e) => {
+  mon.onGameOver();
   const devRun = isDevRun(e); // dev start-round run: no Best update, no NEW BEST
   const mode = normalizeMode(e.mode);
   const newBest = !devRun && e.score > run.bestAtRunStart && e.score > 0;
@@ -791,9 +858,11 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     pause();
     audio.suspend();
+    mon.onPause();
   } else {
-    audio.resume();
+    if (!mon.isBusy()) audio.resume();
     lastFrame = performance.now();
+    mon.onResume();
   }
 });
 window.addEventListener('blur', () => pause());

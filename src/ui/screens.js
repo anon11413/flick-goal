@@ -212,7 +212,8 @@ export function createMenu(app) {
     const on = app.toggleSound();
     soundBtn.innerHTML = icon(on ? 'soundOn' : 'soundOff');
   }, 'c-blue');
-  const noAdsBtn = mon.enabled ? roundBtn('noAds', 'Remove ads', () => app.buyNoAds(), 'c-red') : null;
+  // No Ads: only where purchases work AND there are forced ads to remove.
+  const noAdsBtn = mon.iap.enabled && mon.adsEnabled ? roundBtn('noAds', 'Remove ads', () => app.buyNoAds(), 'c-red') : null;
   const giftBadge = h('span.badge', '!');
   // The label ("FREE!" / countdown) is the gift's call to action, so tapping it claims too.
   const giftLabel = h('span.btn-label.gift-label', { onclick: () => app.claimGift(giftBtn) }, '');
@@ -394,8 +395,11 @@ export function createGameOver(app) {
     const total = r.coinsTotal != null ? r.coinsTotal : r.coinsRun;
     setText(coinsNum, '+' + fmtNum(total));
     coinsRow.hidden = total <= 0;
-    continueBtn.hidden = !(mon.enabled && r.canContinue);
-    doubleBtn.hidden = !(mon.enabled && (r.doublable != null ? r.doublable : r.coinsRun) > 0);
+    // Rewarded buttons exist only while ads can be requested (consent given, ads on). A tap with no ad
+    // loaded yet waits briefly, then explains "No ad available" - the buttons are never dead.
+    const adsOk = mon.adsEnabled && mon.ads.rewardedAvailable();
+    continueBtn.hidden = !(adsOk && r.canContinue);
+    doubleBtn.hidden = !(adsOk && (r.doublable != null ? r.doublable : r.coinsRun) > 0);
     adRow.hidden = continueBtn.hidden && doubleBtn.hidden;
     pill.set(app.wallet.displayed());
   }
@@ -439,10 +443,22 @@ export function createSettings(app) {
   const aimSlider = toggleRow('Aim slider', 'slider', () => app.isAimSliderOn(), (v) => app.setAimSlider(v),
     (on) => (on ? 'On: slider every kick' : 'Off: aim with the dots'));
   aimSlider.el.classList.add('aim-row');
-  const restore = mon.enabled
-    ? h('button.set-row.action', { type: 'button', onclick: () => app.restorePurchases() },
-      h('span.set-ic', { html: icon('restore') }), h('span.set-label', 'Restore Purchases'), h('span.set-chev', { html: icon('back') }))
+  const restore = mon.iap.enabled
+    ? h('button.set-row.action.restore-row', { type: 'button', onclick: () => app.restorePurchases() },
+      h('span.set-ic', { html: icon('restore') }),
+      h('span.set-label', h('span', 'Restore Purchases'), h('small.set-sub', 'Brings back No Ads. Coin packs are used up and can’t be restored.')),
+      h('span.set-chev', { html: icon('back') }))
     : null;
+  // Google UMP privacy options: required for EEA / UK players who were asked for consent.
+  const privacyRow = h('button.set-row.action.privacy-row', { type: 'button', onclick: () => app.showPrivacyOptions() },
+    h('span.set-ic', { html: icon('lock') }), h('span.set-label', 'Privacy & ad choices'), h('span.set-chev', { html: icon('back') }));
+  privacyRow.hidden = true;
+  const policyUrl = cfg.store && typeof cfg.store.privacyPolicyUrl === 'string' ? cfg.store.privacyPolicyUrl : '';
+  const policyRow = policyUrl
+    ? h('a.set-row.action.policy-row', { href: policyUrl, target: '_blank', attrs: { rel: 'noopener' } },
+      h('span.set-ic', { html: icon('info') }), h('span.set-label', 'Privacy Policy'), h('span.set-chev', { html: icon('back') }))
+    : null;
+  const infoCard = restore || policyUrl || mon.adsEnabled ? h('div.set-card', restore, privacyRow, policyRow) : null;
   const reset = h('button.set-row.action.danger', { type: 'button', onclick: () => app.resetProgress() },
     h('span.set-ic', { html: icon('trash') }), h('span.set-label', 'Reset Progress'), h('span.set-chev', { html: icon('back') }));
 
@@ -453,17 +469,19 @@ export function createSettings(app) {
       h('div.topbar-spacer')),
     h('div.settings-body',
       pop(h('div.set-card', sound.el, haptics ? haptics.el : null, aimSlider.el), 0),
-      restore ? pop(h('div.set-card', restore), 1) : null,
+      infoCard ? pop(infoCard, 1) : null,
       pop(h('div.set-card', reset), 2),
       pop(h('div.set-about',
         h('div.set-logo', 'FLICK GOAL'),
-        h('div.version', app.qa ? `v${cfg.version} · ads: ${mon.mode}` : `v${cfg.version}`)), 3)));
+        h('div.version', app.qa ? `v${cfg.version} · ads: ${mon.providers.ads || 'off'} · iap: ${mon.providers.iap || 'off'}` : `v${cfg.version}`)), 3)));
 
   function syncAll() {
     sound.sync();
     if (haptics) haptics.sync();
     aimSlider.el.hidden = !app.aimSliderOwned();
     aimSlider.sync();
+    privacyRow.hidden = !mon.privacy.required();
+    if (infoCard) infoCard.hidden = !restore && !policyRow && privacyRow.hidden;
   }
   return {
     el,

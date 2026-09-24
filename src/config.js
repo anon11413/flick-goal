@@ -3,8 +3,15 @@
 // Owner: spec author / engine engineer. Shell engineer reads it, never writes it.
 // Units: world units ("u"), seconds, u/s, u/s^2. World is y-UP, ground at y = 0.
 // UI/rail sizes marked "css px" are screen-space CSS pixels.
+//
+// GOING LIVE (ads + purchases): the ONLY block to edit is `store` below (search "STORE / MONETIZATION IDS").
+
+import { BUILD } from './build-profile.js';
 
 const HOUR = 60 * 60 * 1000;
+const MIN = 60 * 1000;
+const PROFILES = ['dev', 'web-release', 'android-debug', 'android-release'];
+const PROFILE = PROFILES.includes(BUILD && BUILD.profile) ? BUILD.profile : 'dev';
 
 function deepFreeze(o) {
   if (o && typeof o === 'object' && !Object.isFrozen(o)) {
@@ -16,7 +23,12 @@ function deepFreeze(o) {
 
 export const CONFIG = deepFreeze({
   version: '2.0.0',
-  debug: false, // main.js also enables debug with ?debug=1
+  debug: false, // main.js also enables debug with ?debug=1 (dev profile only)
+
+  // ---- Build profile (src/build-profile.js; packaging scripts rewrite it in the www/ copy only) ----
+  build: { profile: PROFILE, adMode: BUILD && BUILD.adMode === 'live' ? 'live' : 'test' },
+  // ?qa ?debug ?round ?ads=off ?mode ?style ?gfx ... are honoured only in the dev profile.
+  allowUrlFlags: PROFILE === 'dev',
 
   // ---- Fixed-timestep simulation (main.js owns requestAnimationFrame) ----
   sim: {
@@ -263,19 +275,84 @@ export const CONFIG = deepFreeze({
   },
   defaults: { ball: 'classic', stadium: 'day' },
 
-  // ---- IAP products (display prices are placeholders; real ones come from the store) ----
+  // ====================== STORE / MONETIZATION IDS: THE ONLY BLOCK TO EDIT FOR GO-LIVE ======================
+  // Public client IDs only (safe in this PUBLIC repo). NEVER put RevenueCat *secret* keys (sk_...),
+  // keystores, passwords or service-account JSON here. Until you replace them, Google's official
+  // TEST ad units are used (real units during development can get an AdMob account banned).
+  // Debug APKs ALWAYS use Google's test ads, whatever is written here. Step by step: docs/MONETIZATION_PLAN.md §8.
+  store: {
+    // Android package name. Must match capacitor.config.json "appId". PERMANENT once uploaded to Google Play.
+    androidAppId: 'com.flickgoal.game',
+    admob: {
+      // AdMob -> Apps -> your app -> App settings -> "App ID" (contains '~'). Google's TEST app id below.
+      appId: 'ca-app-pub-3940256099942544~3347511713',
+      // AdMob -> Apps -> Ad units (ids contain '/'). Google's TEST units below.
+      rewarded: 'ca-app-pub-3940256099942544/5224354917',
+      interstitial: 'ca-app-pub-3940256099942544/1033173712',
+      // Your phone's test-device id (logcat: "Use RequestConfiguration.Builder.setTestDeviceIds(...)").
+      // Registered devices get test ads even from real units. Never tap real ads on your own phone.
+      testDeviceIds: [],
+      // Audience (decision D1). Defaults: NOT child-directed (13+), ads rated G/PG.
+      // If the Play "Target audience" includes children: tagForChildDirectedTreatment: true, rating 'General'.
+      tagForChildDirectedTreatment: false,
+      tagForUnderAgeOfConsent: false,
+      maxAdContentRating: 'ParentalGuidance', // 'General' | 'ParentalGuidance' | 'Teen' | 'MatureAudience'
+      // Consent-form testing, debug APKs only: 1 = pretend EEA, 3 = US regulated state, 0 = off.
+      // umpTestDeviceIds takes the HASHED id that the UMP SDK logs (not the ads test-device id).
+      umpDebugGeography: 0,
+      umpTestDeviceIds: [],
+    },
+    revenuecat: {
+      // RevenueCat -> Project -> API keys -> Google Play app "Public SDK key" (starts with "goog_").
+      // Empty = in-app purchases are hidden in Android builds (ads still work).
+      googleApiKey: '',
+      // RevenueCat Test Store key (starts with "test_"): DEBUG APKs only. Release builds never use it.
+      testStoreApiKey: '',
+      noAdsEntitlement: 'no_ads', // RevenueCat entitlement id, attached ONLY to the no_ads product
+    },
+    // Public privacy-policy page (Play requires a link inside the app). Empty = no Settings row.
+    privacyPolicyUrl: '',
+  },
+  // ==========================================================================================================
+
+  // ---- IAP products: ids must match Google Play Console one-time products AND RevenueCat products ----
+  // Ids are tier names on purpose: Play never lets an id be reused, while the coin amount granted comes
+  // from `grants` here and can be retuned later. `priceString` is only the mock / offline placeholder:
+  // real builds always show the store's localized price. no_ads = NON-consumable in RevenueCat and the
+  // only product attached to the `no_ads` entitlement; coin packs = consumable, no entitlement.
+  // Economy: Aim Slider 10,000 coins; the whole catalog 24,700 coins.
   products: [
-    { id: 'no_ads',     type: 'nonconsumable', title: 'No Ads',      description: 'Remove all forced ads forever', priceString: '$2.99', grants: { noAds: true } },
-    { id: 'coins_500',  type: 'consumable',    title: 'Coin Stack',  description: '500 coins',  priceString: '$0.99', grants: { coins: 500 } },
-    { id: 'coins_1500', type: 'consumable',    title: 'Coin Bag',    description: '1,500 coins', priceString: '$2.99', grants: { coins: 1500 }, tag: 'POPULAR' },
-    { id: 'coins_5000', type: 'consumable',    title: 'Coin Vault',  description: '5,000 coins', priceString: '$7.99', grants: { coins: 5000 }, tag: 'BEST VALUE' },
+    { id: 'no_ads',       type: 'nonconsumable', title: 'No Ads',     description: 'Remove forced ads forever', priceString: '$2.99', grants: { noAds: true } },
+    { id: 'coins_small',  type: 'consumable',    title: 'Coin Stack', description: '1,500 coins',  priceString: '$0.99', grants: { coins: 1500 } },
+    { id: 'coins_medium', type: 'consumable',    title: 'Coin Bag',   description: '5,000 coins',  priceString: '$2.99', grants: { coins: 5000 }, tag: 'POPULAR' },
+    { id: 'coins_large',  type: 'consumable',    title: 'Coin Chest', description: '10,000 coins', priceString: '$4.99', grants: { coins: 10000 }, tag: 'AIM SLIDER' },
+    { id: 'coins_mega',   type: 'consumable',    title: 'Coin Vault', description: '22,000 coins', priceString: '$9.99', grants: { coins: 22000 }, tag: 'BEST VALUE' },
   ],
 
-  // ---- Monetization (placeholders only until owner approval) ----
+  // ---- Monetization behaviour (who provides ads / purchases, and how often ads may show) ----
+  // mode 'auto': native Android -> AdMob + RevenueCat; web dev build -> mock (TEST AD / TEST PURCHASE
+  //              placeholders); web release build -> off.   mode 'off': hides ALL ad / purchase UI.
   monetization: {
-    mode: 'mock',                    // 'mock' | 'off'. 'off' hides ALL ad/IAP UI
-    interstitialEvery: 3,            // every N game-overs...
-    minGamesBeforeInterstitial: 2,   // ...but never before this many games played
+    mode: 'auto',
+    // Interstitials (decision D4): only when leaving Game Over (Play Again / Home); never on launch,
+    // never in the first session, never right after a rewarded ad, never for No Ads owners.
+    interstitialEvery: 3,             // every N game overs...
+    minGamesBeforeInterstitial: 3,    // ...never before this many games played
+    minSessionsBeforeInterstitial: 2, // ...never in the first app session (sessions count cold starts)
+    interstitialMinGapMs: 2 * MIN,    // ...at least this long after the previous interstitial
+    afterRewardedGapMs: 90 * 1000,    // ...and this long after a rewarded ad
+    // Ad loading
+    rewardedLoadTimeoutMs: 8000,      // rewarded tap while no ad is loaded: wait this long, then "No ad available"
+    loadTimeoutMs: 30000,             // an ad request that never answers counts as failed
+    preloadRetryMs: [30000, 60000, 120000, 300000], // backoff after a failed load (the last value repeats)
+    adMaxAgeMs: 55 * MIN,             // reload a cached ad older than this
+    rewardGraceMs: 400,               // a reward event may arrive just after "dismissed"
+    showTimeoutMs: 15000,             // show() without any showed / dismissed / failed event: give up
+    resumeWatchdogMs: 3000,           // app resumed after an ad but no "dismissed" event: finish anyway
+    consentTimeoutMs: 10000,
+    readyTimeoutMs: 15000,            // mon.ready resolves after this even if consent / the store hang
+    resumeSyncMinGapMs: 30000,        // purchases are re-checked on app resume at most this often
+    // Mock provider (web dev profile)
     mockAdSkipAfterMs: 2000,
     mockRewardedMs: 2000,
     mockPurchaseDelayMs: 600,
@@ -294,8 +371,9 @@ export const CONFIG = deepFreeze({
   ui: { themeColor: '#4FC3F7' },
 
   // ---- Developer "start round" option (src/dev.js, src/ui/devPanel.js) ----
-  // enabled: false removes every dev access path (?round, ?dev, Settings version 5x tap) for release.
-  dev: { enabled: true, maxRound: 200 },
+  // enabled: false removes every dev access path (?round, ?dev, Settings version 5x tap). Derived from the
+  // build profile: on for 'dev' and 'android-debug', off for release builds.
+  dev: { enabled: PROFILE === 'dev' || PROFILE === 'android-debug', maxRound: 200 },
 });
 
 export default CONFIG;

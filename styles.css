@@ -1403,3 +1403,79 @@ button.coin-pill { cursor: pointer; padding-right: 4px; min-height: 44px; }
 @media (prefers-reduced-motion: reduce) {
   .mode-chip.switching, .mode-label.in, .mode-label.out, .mode-new, .mode-callout, .go-far, .hud-dist.bump { animation: none !important; }
 }
+
+/* ------------------------------------------------------------------ real store / ads states */
+.pack-grid.four { grid-template-columns: repeat(2, 1fr); gap: 16px 12px; margin-top: 12px; }
+.pack-grid.four .pack { padding: 18px 6px 12px; }
+.pack-art.s4 span:nth-child(1) { left: -4px; top: 12px; }
+.pack-art.s4 span:nth-child(2) { left: 34px; top: 12px; }
+.pack-art.s4 span:nth-child(3) { left: 6px; top: 0; }
+.pack-art.s4 span:nth-child(4) { left: 24px; top: 0; }
+.pack:disabled { cursor: default; }
+.pack:disabled:active { transform: none; box-shadow: 0 5px 0 rgba(0, 0, 0, .14); }
+.pack.off .pack-price { background: #c9cfdc; box-shadow: 0 3px 0 #aab2c3; }
+.pack.off .pack-art, .pack.off .pack-amount { opacity: .55; }
+.pack-price, .iap-card .btn.pill.sm { min-width: 64px; display: inline-flex; align-items: center; justify-content: center; }
+.btn.loading:disabled, .pack.loading:disabled { opacity: 1; }
+.spin-dot {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, .45);
+  border-top-color: #fff;
+  animation: spin .8s linear infinite;
+  vertical-align: middle;
+}
+.store-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: -4px 0 14px;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: center;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, .15);
+}
+a.set-row { text-decoration: none; }
+.restore-row .set-sub { font-size: 12px; line-height: 1.25; }
+.ad-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(10, 12, 25, .72);
+  pointer-events: auto;
+  opacity: 0;
+  transition: opacity .18s;
+}
+.ad-loading.in { opacity: 1; }
+.ad-loading-card {
+  width: min(260px, 100%);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 24px;
+  padding: 22px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 6px 0 rgba(0, 0, 0, .2);
+}
+.ad-loading .spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 5px solid var(--soft);
+  border-top-color: var(--green);
+  animation: spin .8s linear infinite;
+}
+.ad-loading-text { font-size: 17px; font-weight: 900; }
+@media (prefers-reduced-motion: reduce) {
+  .spin-dot, .ad-loading .spinner { animation-duration: 2.4s; }
+}
