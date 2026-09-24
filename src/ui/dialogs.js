@@ -4,11 +4,12 @@ import { h, fmtNum } from './dom.js';
 import { icon } from './icons.js';
 
 /**
- * createDialogs({root, onClick}) -> { confirmDialog, toast, rewardPopup, isOpen }
+ * createDialogs({root, onClick}) -> { confirmDialog, toast, rewardPopup, isOpen, closeTop }
  * root: overlay container inside #stage. onClick: called on every dialog button press (sfx/haptic).
  */
 export function createDialogs({ root, onClick = () => {} } = {}) {
   let openCount = 0;
+  const stack = []; // cancel functions of the open modals, newest last (Android Back closes the top one)
   let toastEl = null;
   let toastTimer = 0;
 
@@ -28,9 +29,12 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
       openCount++;
       const prevFocus = document.activeElement;
       let done = false;
+      const cancelTop = () => close(cancelValue);
       const close = (value) => {
         if (done) return;
         done = true;
+        const i = stack.indexOf(cancelTop);
+        if (i >= 0) stack.splice(i, 1);
         wrap.classList.remove('in');
         wrap.classList.add('out');
         document.removeEventListener('keydown', onKey, true);
@@ -55,6 +59,7 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
         else trapFocus(card, e);
       }
       document.addEventListener('keydown', onKey, true);
+      stack.push(cancelTop);
       root.appendChild(wrap);
       requestAnimationFrame(() => wrap.classList.add('in'));
       const focusEl = (initialFocus && initialFocus(card)) || card.querySelector('button');
@@ -149,5 +154,12 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
     rewardPopup,
     toast,
     isOpen: () => openCount > 0,
+    /** Close the newest open dialog as if cancelled (Android Back). Returns false when none is open. */
+    closeTop() {
+      const cancel = stack[stack.length - 1];
+      if (!cancel) return false;
+      cancel();
+      return true;
+    },
   };
 }

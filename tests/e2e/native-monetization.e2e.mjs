@@ -10,7 +10,8 @@
 // Flows: consent form (EEA) -> interstitial after N game overs -> Continue via rewarded ->
 // 2x coins closed early (no reward) -> no fill ("No ad available") -> store COINS tab with localized
 // prices -> buy a coin pack (exactly once, even with duplicate store events) -> pending payment
-// completed later -> buy No Ads -> Settings: Privacy & ad choices + Restore Purchases.
+// completed later -> buy No Ads -> Settings: Privacy & ad choices + Restore Purchases -> Android Back
+// button on every screen (store, quit prompt, settings, playing / paused, game over).
 // Fails (exit 1) on any console error, page error, unhandled rejection or failed check.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -265,6 +266,47 @@ try {
   await waitFor(() => !document.querySelector('.toast'), null, 8000);
   await sleep(500);
   await shot('native-11-store-coins-clean');
+
+  // ---- Android Back button (@capacitor/app "backButton"): back a screen, pause / resume, quit prompt
+  const back = () => ev(() => window.__fake.App.emit('backButton', { canGoBack: false }));
+  await ev(() => { window.__exits = 0; window.__fake.App.exitApp = () => { window.__exits++; return Promise.resolve(); }; });
+  await back();
+  await waitFor(() => window.__fg.router.current === 'menu', null, 4000);
+  check(true, 'Back in the store -> menu');
+  await sleep(400);
+  await back();
+  await page.locator('.modal').waitFor({ state: 'visible', timeout: 4000 });
+  check(/Quit Flick Goal\?/.test(await ev(() => document.querySelector('.modal').textContent)), 'Back on the menu -> "Quit Flick Goal?" dialog');
+  await sleep(300);
+  await shot('native-12-back-quit-dialog');
+  await back();
+  await waitFor(() => !document.querySelector('.modal'), null, 4000);
+  check((await ev(() => window.__exits)) === 0 && (await route()) === 'menu', 'Back again closes the dialog, app keeps running');
+  await back();
+  await page.locator('.modal').waitFor({ state: 'visible', timeout: 4000 });
+  await tap('.modal .btn.green');
+  await waitFor(() => window.__exits === 1, null, 4000);
+  check(true, 'QUIT -> App.exitApp()');
+  await waitFor(() => !document.querySelector('.modal'), null, 4000);
+  await tap('.menu .btn.round[aria-label="Settings"]');
+  await waitFor(() => window.__fg.router.current === 'settings');
+  await back();
+  await waitFor(() => window.__fg.router.current === 'menu', null, 4000);
+  check(true, 'Back in Settings -> menu');
+  await sleep(400);
+  await tap('.play-big');
+  await waitFor(() => window.__fg.router.current === 'playing', null, 6000);
+  await sleep(300);
+  await back();
+  await waitFor(() => window.__fg.router.current === 'paused', null, 4000);
+  check(true, 'Back while playing -> paused');
+  await back();
+  await waitFor(() => window.__fg.router.current === 'playing', null, 4000);
+  check(true, 'Back while paused -> resumed');
+  await missToGameOver();
+  await back();
+  await waitFor(() => window.__fg.router.current === 'menu', null, 10000);
+  check(true, 'Back on Game Over -> Home');
 
   const rej = await ev(() => window.__rejections);
   problems.push(...rej.map((r) => 'unhandledrejection: ' + r));

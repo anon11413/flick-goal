@@ -255,8 +255,8 @@ scripts/android-config.mjs     NEW: reads src/config.js (Node ESM) → writes an
                                verifies capacitor.config.json appId, applies versionCode/versionName, guards release (§7)
 android/                       generated once by `npx cap add android`, then committed (manifest edits below)
 .github/workflows/android.yml  NEW (§7)
-store/app-ads.txt              template for the owner to copy to anon11413.github.io
-store/privacy-policy.html      draft privacy policy for the owner to review and host
+docs/play/app-ads.txt          template for the owner to copy to anon11413.github.io
+docs/play/privacy-policy.html   draft privacy policy for the owner to review and host
 tests/monetization.test.mjs    NEW: fake AdMob/Purchases objects → reward/skip/no-fill/timeout, ledger dedupe, pending, restore
 ```
 
@@ -603,7 +603,7 @@ revenuecat-key.json
     - Optional: create a **Test Store** (Apps & providers → Test configuration), add the same 5 products and the entitlement there, and paste its key into `store.revenuecat.testStoreApiKey`. This allows purchase testing in debug APKs before Play is set up. The release guard blocks it from shipping.
 
 **F. Website, privacy, app-ads.txt**
-18. Review and edit `store/privacy-policy.html`, which will be drafted. It must name AdMob (ads, advertising ID, IP-based approximate location, diagnostics), RevenueCat (purchase history, anonymous ID), local-only game data, a contact email, and a children's statement.
+18. Review and edit `docs/play/privacy-policy.html` (step-by-step version of this checklist: `docs/play/OWNER_GUIDE.md`). It must name AdMob (ads, advertising ID, IP-based approximate location, diagnostics), RevenueCat (purchase history, anonymous ID), local-only game data, a contact email, and a children's statement.
     - Publish it in the `anon11413.github.io` repo as `/flick-goal/privacy.html`, which serves at `https://anon11413.github.io/flick-goal/privacy.html`.
     - Enter it in Play Console. The app's Settings screen links to it.
 19. **Data safety form:**

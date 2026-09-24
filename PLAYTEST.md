@@ -11,7 +11,7 @@ python -m http.server 8765        # or: npx serve -l 8765 .
 
 Open http://localhost:8765/. Don't open `index.html` straight from disk (`file://`), because browsers block ES modules loaded that way.
 
-Unit tests (Node 18+):
+Unit tests (Node 18+; the Capacitor / Android tooling needs Node 22+):
 
 ```bash
 npm test                          # = node --test "tests/*.test.mjs"
@@ -117,21 +117,53 @@ The five PRO (HD) stadiums are the try/pro-graphics look, redrawn for the v2 on-
 - **Measured on this PC** (headless Chrome, 390x844 at 3x, auto-play with the galaxy ball, forced HIGH tier; share of frames slower than 21 ms, the build before this fix pass → now, interleaved in one session): FIELD day 4-27% → 2-11%, night 12-57% → 2-13%, snow 5-42% → 2-16%, sunset 18-27% → 5%, arcade 48-85% → 9-28%; ENDLESS arcade 68% → 3%, the other themes 2-8% → 1-3%. GPU-process time per frame on arcade FIELD: aiming 12.8 → 7.9 ms, camera swoop 14.2 → 7-9 ms. RETRO in the same runs: 1-3%. The PC was busy with other work, so read these as ranges. `renderer.draw` itself went up (median about 3-4 ms, from about 2 ms), mostly the ball's side canvas. At 4x CPU slowdown the PRO low tier now runs about as fast as RETRO (median frame about 41-46 ms vs 40-48 ms). Both are limited by the on-field layout; the old sideline layout of try/pro-graphics reached 18 ms.
 - **Please check on a real phone:** does the turf texture read as grass (not rain) at arm's length? Are the fans in the end-zone stands readable when the ball flies in? Does any stadium feel too dark at the bottom of the screen?
 
-## Monetization: where the real SDKs plug in (after approval)
+## Web vs Android app
 
-Everything goes through `src/platform/monetization.js`. For now it only has a **MockProvider**: obvious "TEST AD" overlays and a "TEST PURCHASE: no real money" sheet. The rest of the game only calls this adapter:
+The same `src/` code runs in three places. What each one shows is decided by the **build profile**
+(`src/build-profile.js`; the committed copy is `dev`, and only the packaged `www/` copy is rewritten):
 
-- `ads.showInterstitial(placement)` returns `{shown}`. It is called on leaving Game Over (Play Again / Home), every `interstitialEvery` game-overs, and skipped when No Ads is owned.
-- `ads.showRewarded(placement)` returns `{rewarded}`. Placements: `continue`, `double_coins`, and `store_coins` (store "Watch" card).
-- `iap.getProducts()`, `iap.purchase(productId)` returning `{ok}`, `iap.restore()`, `entitlements.noAds()`.
+| Where | How to run | Ads | Purchases | Dev tools / URL flags |
+|---|---|---|---|---|
+| Local web / GitHub Pages playtests (`dev`) | static server, as above | mock "TEST AD" overlays | mock "TEST PURCHASE" sheet | on (`?qa ?round ?ads=off ?mode ...`) |
+| Public web build (`web-release`) | `npm run build:web -- --profile web-release`, serve `www/` | none | none (all ad / purchase buttons hidden) | off |
+| Android debug APK (`android-debug`) | GitHub Actions artifact `flick-goal-debug-apk` | real AdMob SDK, **always Google test ads** | RevenueCat (Test Store key if set, else the Google key) | developer panel on, URL flags ignored |
+| Android release AAB (`android-release`) | GitHub Actions artifact `flick-goal-release-aab-...` | AdMob: `test` ad mode = Google test ads, `live` = your units | RevenueCat Google key | all off |
 
-To go live, add a `NativeProvider` with the same six methods as `createMockProvider` (`init`, `showInterstitial`, `showRewarded`, `getProducts`, `purchase`, `restore`), and select it in `createMonetization()` when `cfg.monetization.mode === 'native'`:
+The web build never loads a native SDK: inside the Android app the plugins come from `window.Capacitor`
+(no bundler), and outside it the game falls back to the mock (dev) or to nothing (release).
 
-- **Ads: AdMob** via `@capacitor-community/admob`. `AdMob.initialize()` goes in `init`. `prepareInterstitial` / `showInterstitial` go in `showInterstitial`. `prepareRewardVideoAd` / `showRewardVideoAd` go in `showRewarded`, and it resolves `{rewarded:true}` only on the reward callback.
-- **IAP: RevenueCat** via `@revenuecat/purchases-capacitor` (or `cordova-plugin-purchase`). `Purchases.configure` goes in `init`. `getOfferings` goes in `getProducts`, which should use the store's localized `priceString`. `purchaseStoreProduct` goes in `purchase`. `restorePurchases` goes in `restore`: re-grant `no_ads` when `entitlements.active['no_ads']`.
-- Product ids live in `config.js` (`products`): `no_ads` (non-consumable), `coins_500`, `coins_1500`, `coins_5000`. Create the same ids in App Store Connect / Play Console.
-- The adapter contract: every promise **resolves** (it never rejects). `isBusy()` is true while an ad or sheet is open, and the game pauses itself during that time. Grant coins only after the store confirms the purchase.
-- Before shipping, also remove the `?ads=off` URL switch in `src/main.js`, or gate it behind a debug flag.
+### Android project (Capacitor 8, Android only)
+
+- `npm install` once (Node 22+), then `npm run build:web` (copies `index.html`, `styles.css`, `icon.svg`,
+  `manifest.webmanifest` and `src/` into `www/`; tests / docs are never copied) and `npx cap sync android`.
+  `npm run build:android-debug` / `build:android-release` chain build:web + cap sync + `scripts/android-config.mjs`
+  (writes the AdMob app id from `src/config.js` into `android/app/src/main/res/values/admob.xml`, sets the version,
+  and blocks release builds that would ship test IDs).
+- **Gradle / the Android SDK are not run on this PC**: the APK / AAB are built by `.github/workflows/android.yml`
+  on GitHub (JDK 21, Android SDK 36). Push code, open the Actions run, download the artifact.
+- `android/` is committed (manifest edits: portrait, `appCategory="game"`, `singleTop`, AdMob app id meta-data,
+  AD_ID; immersive full screen in `MainActivity.java`; icons + splash). `www/`, `node_modules/`, build outputs and
+  the files `cap sync` regenerates are git-ignored.
+- **Back button** (Android only, `src/platform/nativeShell.js`): pauses a run, resumes, goes back from Store /
+  Settings, goes Home from Game Over, closes an open dialog, and on the menu asks "Quit Flick Goal?".
+- Browser check of the Android flows with fake plugins (consent, ads, purchases, restore, Back button):
+  `PLAYWRIGHT_CORE=<playwright-core/index.mjs> node tests/e2e/native-monetization.e2e.mjs http://localhost:8793/v2-standard/`
+- Regenerate art (needs Chrome + playwright-core): `node scripts/render-icons.mjs` (launcher icons, splash, Play icon,
+  feature graphic) and `node scripts/play-screenshots.mjs <server url>` (Play screenshots from the real game).
+
+**Installing a debug APK:** download `flick-goal-debug-apk` from the Actions run, copy `app-debug.apk` to the
+phone, open it and allow "Install unknown apps". Ads there are Google test ads ("Test Ad"). The coins tab of the
+store appears once a RevenueCat key is in `src/config.js`.
+
+**Going live** (accounts, IDs, Play Console, testing, production): `docs/play/OWNER_GUIDE.md`.
+
+## Monetization in the code
+
+Everything goes through `src/platform/monetization.js` (adapter; every promise resolves, `isBusy()` pauses the
+game). Providers: `admob.js` (rewarded + interstitial + Google UMP consent), `revenuecat.js` (coin packs + No Ads +
+restore, exactly-once coin ledger in the save) and the web mock. IDs and keys: the `store` block in `src/config.js`;
+ad timing: `monetization`; products: `products` (`no_ads`, `coins_small`, `coins_medium`, `coins_large`,
+`coins_mega`). Design and sources: `docs/MONETIZATION_PLAN.md`.
 
 ## Tunables in `src/config.js`
 

@@ -9,6 +9,7 @@ import { createSaveManager } from './economy/save.js';
 import { createShop } from './economy/shop.js';
 import { createRunCoins } from './economy/runCoins.js';
 import { createMonetization } from './platform/monetization.js';
+import { createNativeShell } from './platform/nativeShell.js';
 import { createAudio, createHaptics } from './platform/audio.js';
 import { $, shade, isShown, fmtTime, fmtNum } from './ui/dom.js';
 import { createDialogs } from './ui/dialogs.js';
@@ -868,6 +869,45 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('blur', () => pause());
 window.addEventListener('pagehide', () => pause());
 
+// Android app only (inactive on the web): hardware / gesture Back button + App pause / resume.
+// Back: pause a run, resume, go back a screen, close a dialog, and on the menu ask before quitting.
+const nativeShell = createNativeShell({
+  cap: window.Capacitor || null,
+  state: () => ({
+    loading: !!overlay.querySelector('.ad-loading.in .ad-loading-cancel'),
+    busy: mon.isBusy(),
+    dialogOpen: dialogs.isOpen(),
+    flowBusy,
+    route: router.current,
+  }),
+  actions: {
+    cancelLoading() {
+      const b = overlay.querySelector('.ad-loading.in .ad-loading-cancel');
+      if (b) b.click();
+    },
+    closeDialog: () => dialogs.closeTop(),
+    pause: () => pause(),
+    resume: () => resume(),
+    back: () => app.back(),
+    home() { if (sinceRoute() >= GAMEOVER_GRACE) goHome(); },
+    confirmExit: () => dialogs.confirmDialog({
+      title: 'Quit Flick Goal?',
+      message: 'Your coins and progress are saved.',
+      okText: 'QUIT',
+      cancelText: 'Keep playing',
+      iconName: 'football',
+    }),
+  },
+  onPause() {
+    pause();
+    audio.suspend();
+  },
+  onResume() {
+    lastFrame = performance.now();
+    if (!mon.isBusy() && !document.hidden) audio.resume();
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Resize (ResizeObserver + orientation + visual viewport) and DPR-crisp canvas
 // ---------------------------------------------------------------------------
@@ -959,7 +999,7 @@ function boot() {
   if (!save.persisted) console.info('Flick Goal: storage unavailable — progress will not be saved this session.');
   if (qa) {
     window.__fg = {
-      game, shop, save, mon, router, renderer, audio, CONFIG, fmtNum, dev, hud, app,
+      game, shop, save, mon, router, renderer, audio, CONFIG, fmtNum, dev, hud, app, nativeShell,
       get aim() { return { ...aim }; },
       debugState: () => renderer.debugState(),
     };

@@ -1,0 +1,9 @@
+# app-ads.txt for Flick Goal (TEMPLATE - not live yet)
+#
+# 1. In AdMob open Apps -> app-ads.txt (or "View all apps" -> "How to set up app-ads.txt") and copy
+#    the exact line AdMob shows for your account. It looks like the line below, with YOUR publisher id.
+# 2. Replace pub-XXXXXXXXXXXXXXXX below (16 digits, from AdMob -> Settings -> Account information).
+# 3. Publish this file at the ROOT of the developer website you enter in the Play Console store listing,
+#    e.g. https://anon11413.github.io/app-ads.txt  (a file inside a sub-folder is never read).
+# 4. Delete these comment lines if you like (comments are allowed by the IAB format).
+google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0

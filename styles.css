@@ -21,10 +21,12 @@
   --letterbox: #1f6a8c;
   --font: "Arial Rounded MT Bold", "SF Pro Rounded", ui-rounded, "Nunito", "Segoe UI", system-ui, sans-serif;
   --ease-bounce: cubic-bezier(.34, 1.56, .64, 1);
-  --sat: env(safe-area-inset-top, 0px);
-  --sab: env(safe-area-inset-bottom, 0px);
-  --sal: env(safe-area-inset-left, 0px);
-  --sar: env(safe-area-inset-right, 0px);
+  /* Safe areas: env() in browsers; inside the Android app, Capacitor's SystemBars plugin also sets
+     --safe-area-inset-* (older Android WebViews report env() as 0 under edge-to-edge). */
+  --sat: max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px));
+  --sab: max(env(safe-area-inset-bottom, 0px), var(--safe-area-inset-bottom, 0px));
+  --sal: max(env(safe-area-inset-left, 0px), var(--safe-area-inset-left, 0px));
+  --sar: max(env(safe-area-inset-right, 0px), var(--safe-area-inset-right, 0px));
 }
 
 *, *::before, *::after { box-sizing: border-box; }
