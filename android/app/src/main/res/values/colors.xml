@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Flick Goal sky blue (CONFIG.ui.themeColor / manifest.webmanifest background_color). -->
+    <color name="flick_sky">#4FC3F7</color>
+</resources>

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Flick Goal edits to the Capacitor template (keep them when upgrading Capacitor):
+      - application appCategory="game": with targetSdk 36, Android 16 ignores screenOrientation on large
+        screens (sw >= 600dp) EXCEPT for games, so this keeps the portrait lock on tablets / foldables.
+      - AdMob APPLICATION_ID meta-data: the value lives in res/values/admob.xml, which
+        scripts/android-config.mjs regenerates from src/config.js (store.admob.appId). The GMA SDK
+        crashes at startup without it, so Google's TEST app id is committed by default.
+      - MainActivity: portrait only, launchMode singleTop (RevenueCat: a purchase that bounces through a
+        bank / wallet app is cancelled with singleTask), immersive full screen (MainActivity.java).
+      - AD_ID: play-services-ads already merges this permission in; it is declared here as well so it
+        is visible. Play Console -> App content -> Advertising ID must then be answered "Yes".
+      - BILLING comes from the RevenueCat SDK (Google Play Billing Library 8) through manifest merging.
+    -->
+
+    <application
+        android:allowBackup="true"
+        android:appCategory="game"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+
+        <!-- AdMob App ID (Google's TEST id until src/config.js store.admob.appId is changed). -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="@string/admob_app_id" />
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+</manifest>

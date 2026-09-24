@@ -1,10 +1,28 @@
 {
   "name": "flick-goal",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Flick Goal - one-tap field-goal flick arcade game (no build step)",
+  "description": "Flick Goal - one-tap field-goal flick arcade game (no bundler; Capacitor wraps it for Android)",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "test": "node --test \"tests/*.test.mjs\""
+    "test": "node --test \"tests/*.test.mjs\"",
+    "build:web": "node scripts/build-web.mjs",
+    "build:android-debug": "node scripts/build-web.mjs --profile android-debug && npx cap sync android && node scripts/android-config.mjs --profile android-debug",
+    "build:android-release": "node scripts/build-web.mjs --profile android-release && npx cap sync android && node scripts/android-config.mjs --profile android-release",
+    "cap:sync": "npx cap sync android",
+    "android:config": "node scripts/android-config.mjs"
+  },
+  "dependencies": {
+    "@capacitor-community/admob": "8.1.0",
+    "@capacitor/android": "8.5.2",
+    "@capacitor/app": "8.1.1",
+    "@capacitor/core": "8.5.2",
+    "@revenuecat/purchases-capacitor": "13.6.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
   }
 }

@@ -149,8 +149,8 @@ test('applyProduct grants noAds and coin packs', () => {
   assert.deepEqual(shop.applyProduct('no_ads'), { ok: true, noAds: true });
   assert.equal(shop.hasNoAds(), true);
   assert.equal(save.data.noAds, true);
-  assert.deepEqual(shop.applyProduct('coins_500'), { ok: true, coins: 500 });
-  assert.equal(shop.coins(), 500);
+  assert.deepEqual(shop.applyProduct('coins_small'), { ok: true, coins: 1500 });
+  assert.equal(shop.coins(), 1500);
   assert.deepEqual(shop.applyProduct('bogus'), { ok: false });
   shop.setNoAds(false);
   assert.equal(shop.hasNoAds(), false);

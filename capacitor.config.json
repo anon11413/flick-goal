@@ -1,0 +1,16 @@
+{
+  "appId": "com.flickgoal.game",
+  "appName": "Flick Goal",
+  "webDir": "www",
+  "backgroundColor": "#4FC3F7",
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "SystemBars": {
+      "hidden": true,
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

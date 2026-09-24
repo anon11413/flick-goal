@@ -1,0 +1,175 @@
+# Flick Goal: Android build (Capacitor) on GitHub's servers. Nothing is built on the developer PC.
+#
+# Every run:        npm test -> debug APK (Google TEST ads, installable on a phone) -> artifact "flick-goal-debug-apk"
+# When the 4 signing secrets exist: also a signed release AAB (upload key) -> artifact "flick-goal-release-aab",
+#                   which is the file you upload to Google Play Console.
+#
+# Triggers:
+#   - push to any branch (code changes only)       -> debug APK + release AAB with TEST ads
+#   - push of a tag v*  (e.g. v2.0.1)               -> debug APK + release AAB with LIVE ads (your real AdMob ids)
+#   - Actions tab -> "Android build" -> Run workflow -> choose ad mode test / live
+#     (the Run button appears once this file is on the repository's default branch)
+#
+# Secrets (repo -> Settings -> Secrets and variables -> Actions -> New repository secret), see
+# docs/play/OWNER_GUIDE.md "Upload key":
+#   ANDROID_KEYSTORE_BASE64    the upload keystore file (.p12 or .jks), base64 encoded
+#   ANDROID_KEYSTORE_PASSWORD  its password
+#   ANDROID_KEY_ALIAS          the key alias inside it (e.g. upload)
+#   ANDROID_KEY_PASSWORD       the key password (for a .p12 made with openssl: the same as the keystore password)
+# Nothing else is secret: AdMob ids and the RevenueCat PUBLIC key live in src/config.js (store block).
+name: Android build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'sketches/**'
+  workflow_dispatch:
+    inputs:
+      ad_mode:
+        description: 'Release AAB ads: test = Google test ads (internal / closed testing), live = your real AdMob ids (production)'
+        type: choice
+        options: [test, live]
+        default: test
+      version_code:
+        description: 'Optional versionCode override (must be higher than any build already uploaded to Play). Empty = 1000 + run number'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AD_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.ad_mode || (startsWith(github.ref, 'refs/tags/v') && 'live' || 'test') }}
+      VERSION_CODE_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.version_code || '' }}
+      HAS_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up JDK 21 (Capacitor 8 / plugins compile for Java 21)
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up the Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - name: Version code (1000 + run number unless overridden)
+        run: |
+          code="${VERSION_CODE_INPUT:-$((1000 + GITHUB_RUN_NUMBER))}"
+          case "$code" in (*[!0-9]*|'') echo "::error::version_code must be a whole number (got '$code')"; exit 1;; esac
+          echo "VERSION_CODE=$code" >> "$GITHUB_ENV"
+          echo "versionCode $code, release ads: $AD_MODE, signing secrets present: $HAS_SIGNING"
+
+      # Reuse one debug signing key across runs, so a newer debug APK installs over the previous one
+      # (a new key per run would force an uninstall). It is Android's standard, non-secret debug key.
+      - name: Keep the debug signing key between runs
+        uses: actions/cache@v6
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      # ---------------------------------------------------------------- debug APK (always)
+      - name: Web copy (android-debug profile)
+        run: node scripts/build-web.mjs --profile android-debug
+
+      - name: Capacitor sync
+        run: npx cap sync android
+
+      - name: Android config (AdMob app id + version)
+        run: node scripts/android-config.mjs --profile android-debug --version-code "$VERSION_CODE"
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: flick-goal-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+          if-no-files-found: error
+
+      # ---------------------------------------------------------------- signed release AAB (needs the secrets)
+      - name: No signing secrets - release AAB skipped
+        if: env.HAS_SIGNING != 'true'
+        run: echo "::notice::Release AAB skipped - add the 4 ANDROID_* signing secrets (docs/play/OWNER_GUIDE.md) to also build the Google Play bundle."
+
+      - name: Web copy (android-release profile)
+        if: env.HAS_SIGNING == 'true'
+        run: node scripts/build-web.mjs --profile android-release --ads "$AD_MODE"
+
+      - name: Capacitor sync (release web copy)
+        if: env.HAS_SIGNING == 'true'
+        run: npx cap sync android
+
+      - name: Android config + release guard (fails on test ids with live ads, missing keys)
+        if: env.HAS_SIGNING == 'true'
+        run: node scripts/android-config.mjs --profile android-release --ads "$AD_MODE" --version-code "$VERSION_CODE"
+
+      - name: Decode the upload keystore
+        if: env.HAS_SIGNING == 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 --decode > "$RUNNER_TEMP/upload-keystore.bin"
+          # JKS files start with FEEDFEED, anything else is treated as PKCS#12 (.p12).
+          if [ "$(head -c 4 "$RUNNER_TEMP/upload-keystore.bin" | od -An -tx1 | tr -d ' \n')" = "feedfeed" ]; then ext=jks; else ext=p12; fi
+          mv "$RUNNER_TEMP/upload-keystore.bin" "$RUNNER_TEMP/upload-keystore.$ext"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/upload-keystore.$ext" >> "$GITHUB_ENV"
+
+      - name: Build signed release AAB
+        if: env.HAS_SIGNING == 'true'
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew bundleRelease --no-daemon --stacktrace
+
+      - name: Upload release AAB
+        if: env.HAS_SIGNING == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: flick-goal-release-aab-${{ env.AD_MODE }}-${{ env.VERSION_CODE }}
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove the decoded keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/upload-keystore.*

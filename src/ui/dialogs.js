@@ -4,11 +4,12 @@ import { h, fmtNum } from './dom.js';
 import { icon } from './icons.js';
 
 /**
- * createDialogs({root, onClick}) -> { confirmDialog, toast, rewardPopup, isOpen }
+ * createDialogs({root, onClick}) -> { confirmDialog, toast, rewardPopup, isOpen, closeTop }
  * root: overlay container inside #stage. onClick: called on every dialog button press (sfx/haptic).
  */
 export function createDialogs({ root, onClick = () => {} } = {}) {
   let openCount = 0;
+  const stack = []; // cancel functions of the open modals, newest last (Android Back closes the top one)
   let toastEl = null;
   let toastTimer = 0;
 
@@ -28,9 +29,12 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
       openCount++;
       const prevFocus = document.activeElement;
       let done = false;
+      const cancelTop = () => close(cancelValue);
       const close = (value) => {
         if (done) return;
         done = true;
+        const i = stack.indexOf(cancelTop);
+        if (i >= 0) stack.splice(i, 1);
         wrap.classList.remove('in');
         wrap.classList.add('out');
         document.removeEventListener('keydown', onKey, true);
@@ -55,6 +59,7 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
         else trapFocus(card, e);
       }
       document.addEventListener('keydown', onKey, true);
+      stack.push(cancelTop);
       root.appendChild(wrap);
       requestAnimationFrame(() => wrap.classList.add('in'));
       const focusEl = (initialFocus && initialFocus(card)) || card.querySelector('button');
@@ -62,14 +67,15 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
     });
   }
 
-  /** confirmDialog({title, message, okText, cancelText, danger}) -> Promise<boolean> */
+  /** confirmDialog({title, message, okText, cancelText (null = OK only), danger}) -> Promise<boolean> */
   function confirmDialog({ title = 'Are you sure?', message = '', okText = 'OK', cancelText = 'Cancel', danger = false, iconName = null, iconHtml = null } = {}) {
     return modal({
       label: title,
       className: danger ? 'danger' : '',
       build: (close) => {
         const ok = h('button.btn.pill' + (danger ? '.red' : '.green'), { type: 'button', onclick: () => { onClick(); close(true); } }, okText);
-        const cancel = h('button.btn.pill.white', { type: 'button', onclick: () => { onClick(); close(false); } }, cancelText);
+        // cancelText: null -> a single-button notice (OK only)
+        const cancel = cancelText == null ? null : h('button.btn.pill.white', { type: 'button', onclick: () => { onClick(); close(false); } }, cancelText);
         return h('div.dialog-body',
           iconHtml || iconName ? h('div.dialog-icon', { html: iconHtml || icon(iconName) }) : null,
           h('div.dialog-title', title),
@@ -148,5 +154,12 @@ export function createDialogs({ root, onClick = () => {} } = {}) {
     rewardPopup,
     toast,
     isOpen: () => openCount > 0,
+    /** Close the newest open dialog as if cancelled (Android Back). Returns false when none is open. */
+    closeTop() {
+      const cancel = stack[stack.length - 1];
+      if (!cancel) return false;
+      cancel();
+      return true;
+    },
   };
 }

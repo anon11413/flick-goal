@@ -7,6 +7,7 @@
 import { h, clear, fmtNum, fmtTime, replayClass, dprCanvas, setText, centerIn } from './dom.js';
 import { icon } from './icons.js';
 import { createCoinPill } from './hud.js';
+import { rewardedFailText, COINS_NOT_RESTORABLE } from './iapText.js';
 import {
   drawBallPreview, drawStadiumPreview, drawAimSliderPreview, themePalette, styleOf, stadiumDisplayName,
 } from '../engine/skins.js';
@@ -35,7 +36,7 @@ export function createStore(app) {
   let lastAnim = 0;
   let rewardedBtn = null;
   let rewardedLabel = null;
-  let products = null;
+  let purchasing = null;    // product id whose store sheet is open (spinner on its button)
   let pendingPreviews = []; // [{ id, ctx, w, h }] PRO stadium previews to draw, one per frame
   let sliderCanvas = null;  // { ctx, w, h } animated Aim Slider card
   let lastSliderAnim = 0;
@@ -72,6 +73,7 @@ export function createStore(app) {
     if (id === 'coins' && !mon.enabled) id = 'balls';
     if (!tabBtns[id]) id = 'balls';
     tab = id;
+    if (id === 'coins') ensureProducts();
     for (const [k, b] of Object.entries(tabBtns)) {
       b.classList.toggle('active', k === id);
       b.setAttribute('aria-selected', k === id ? 'true' : 'false');
@@ -373,74 +375,124 @@ export function createStore(app) {
   }
 
   // ---------------- coins tab ----------------
+  // Real store: localized prices from Google Play ('…' while loading, 'Unavailable' when a product
+  // or the store can't be reached). Mock (web dev build): the config placeholder prices.
+  function priceLabel(p, state) {
+    if (purchasing === p.id) return h('span.spin-dot', { attrs: { 'aria-label': 'Processing' } });
+    if (p.priceString) return p.priceString;
+    return state === 'loading' || state === 'idle' ? '…' : 'Unavailable';
+  }
+
   function renderCoins() {
     const wrap = h('div.coins-tab');
-    const list = products || cfg.products.map((p) => ({ ...p }));
+    const iapOn = mon.iap.enabled;
+    const state = iapOn ? mon.iap.productsState() : 'off';
+    const list = iapOn ? mon.iap.products() : [];
+    const locked = !!purchasing || (typeof mon.isBusy === 'function' && mon.isBusy());
+
     const noAdsP = list.find((p) => p.id === 'no_ads');
     if (noAdsP) {
       const owned = shop.hasNoAds();
+      const canBuy = !owned && noAdsP.available && !locked;
       wrap.appendChild(h('div.iap-card.noads' + (owned ? '.owned' : ''),
         h('div.iap-ic.red', { html: icon('noAds') }),
-        h('div.iap-info', h('div.iap-title', noAdsP.title), h('div.iap-desc', owned ? 'Thanks for your support!' : noAdsP.description)),
+        h('div.iap-info', h('div.iap-title', noAdsP.title), h('div.iap-desc', owned ? 'Active. Thanks for your support!' : noAdsP.description)),
         owned
           ? h('span.iap-owned', h('span.mini-ic', { html: icon('check') }), 'OWNED')
-          : h('button.btn.pill.green.sm', { type: 'button', onclick: (e) => buyProduct(noAdsP, e.currentTarget) }, noAdsP.priceString)));
+          : h('button.btn.pill.green.sm' + (purchasing === 'no_ads' ? '.loading' : ''), {
+            type: 'button',
+            disabled: !canBuy,
+            attrs: { 'aria-label': `No Ads, ${noAdsP.priceString || 'price unavailable'}` },
+            onclick: (e) => buyProduct(noAdsP, e.currentTarget),
+          }, priceLabel(noAdsP, state))));
     }
-    const packs = list.filter((p) => p.id !== 'no_ads');
-    const packGrid = h('div.pack-grid');
-    packs.forEach((p, i) => {
-      const coinsN = (cfg.products.find((x) => x.id === p.id) || {}).grants?.coins || 0;
-      const stack = h('div.pack-art.s' + Math.min(3, i + 1), Array.from({ length: Math.min(3, i + 1) }, () => h('span', { html: icon('coin') })));
-      packGrid.appendChild(h('button.pack', { type: 'button', onclick: (e) => buyProduct(p, e.currentTarget) },
+
+    const packs = list.filter((p) => p.id !== 'no_ads' && p.coins > 0);
+    if (packs.length) {
+      const packGrid = h('div.pack-grid' + (packs.length === 4 ? '.four' : ''));
+      packs.forEach((p, i) => {
+        const n = Math.min(4, i + 1);
+        const stack = h('div.pack-art.s' + n, Array.from({ length: n }, () => h('span', { html: icon('coin') })));
+        const off = !p.available;
+        packGrid.appendChild(h('button.pack' + (off ? '.off' : '') + (purchasing === p.id ? '.loading' : ''), {
+          type: 'button',
+          disabled: off || locked,
+          dataset: { id: p.id },
+          attrs: { 'aria-label': `${fmtNum(p.coins)} coins, ${p.priceString || 'price unavailable'}` },
+          onclick: (e) => buyProduct(p, e.currentTarget),
+        },
         p.tag ? h('span.pack-tag', p.tag) : null,
         stack,
-        h('div.pack-amount', fmtNum(coinsN)),
+        h('div.pack-amount', fmtNum(p.coins)),
         h('div.pack-title', p.title),
-        h('span.pack-price', p.priceString)));
-    });
-    wrap.appendChild(packGrid);
+        h('span.pack-price', priceLabel(p, state))));
+      });
+      wrap.appendChild(packGrid);
+    }
+    if (iapOn && state === 'error') {
+      wrap.appendChild(h('div.store-status',
+        h('span', 'Store unavailable. Check your connection.'),
+        h('button.btn.pill.white.sm', { type: 'button', onclick: retryProducts }, 'Retry')));
+    }
 
-    rewardedLabel = h('span', 'WATCH');
-    rewardedBtn = h('button.btn.pill.gold.sm', { type: 'button', onclick: watchForCoins }, h('span.btn-ic', { html: icon('ad') }), rewardedLabel);
-    wrap.appendChild(h('div.iap-card.watch',
-      h('div.iap-ic.gold', { html: icon('coin') }),
-      h('div.iap-info', h('div.iap-title', `+${cfg.economy.rewardedCoins} FREE COINS`), h('div.iap-desc', 'Watch a short video')),
-      rewardedBtn));
-    updateRewarded(true);
+    if (mon.adsEnabled && mon.ads.rewardedAvailable()) {
+      rewardedLabel = h('span', 'WATCH');
+      rewardedBtn = h('button.btn.pill.gold.sm', { type: 'button', onclick: watchForCoins }, h('span.btn-ic', { html: icon('ad') }), rewardedLabel);
+      wrap.appendChild(h('div.iap-card.watch',
+        h('div.iap-ic.gold', { html: icon('coin') }),
+        h('div.iap-info', h('div.iap-title', `+${cfg.economy.rewardedCoins} FREE COINS`), h('div.iap-desc', 'Watch a short video')),
+        rewardedBtn));
+      updateRewarded(true);
+    }
 
-    wrap.appendChild(h('button.link-btn', { type: 'button', onclick: restore }, h('span.mini-ic', { html: icon('restore') }), 'Restore Purchases'));
-    wrap.appendChild(h('div.fine', 'Test mode — purchases are simulated. No real money is charged.'));
+    if (iapOn) {
+      wrap.appendChild(h('button.link-btn', { type: 'button', onclick: restore }, h('span.mini-ic', { html: icon('restore') }), 'Restore Purchases'));
+      wrap.appendChild(h('div.fine', mon.iap.isMock
+        ? 'Test mode — purchases are simulated. No real money is charged.'
+        : `Payments by Google Play. ${COINS_NOT_RESTORABLE}`));
+    }
     return wrap;
   }
 
-  async function buyProduct(p, btnEl) {
+  function retryProducts() {
     app.sfx('click');
-    const res = await mon.iap.purchase(p.id);
-    if (!res.ok) {
-      if (!res.cancelled && res.error && res.error !== 'busy') dialogs.toast(res.error === 'already_owned' ? 'Already owned' : 'Purchase failed', { kind: 'warn' });
-      return;
-    }
-    app.sfx('buy');
-    app.haptic('buy');
-    const def = cfg.products.find((x) => x.id === p.id) || {};
-    if (def.grants && def.grants.coins) {
-      const from = btnEl && btnEl.isConnected ? centerIn(btnEl, stage) : { x: stage.clientWidth / 2, y: stage.clientHeight / 2 };
-      app.wallet.flyFrom(from, 8, def.grants.coins);
-      dialogs.toast(`+${fmtNum(def.grants.coins)} coins!`, { kind: 'ok', ms: 1400 });
-    }
-    if (def.grants && def.grants.noAds) {
-      dialogs.toast('Ads removed — thank you!', { kind: 'ok' });
-      fx.confetti(stage.clientWidth / 2, stage.clientHeight * 0.35, 40, 1.1);
-    }
+    mon.iap.getProducts().then(() => { if (tab === 'coins' && el.classList.contains('active')) render(); }).catch(() => {});
+    if (tab === 'coins') render(); // shows '…' while the fetch runs
+  }
+
+  async function buyProduct(p, btnEl) {
+    if (purchasing) return;
+    app.sfx('click');
+    purchasing = p.id;
     render();
+    let res;
+    try {
+      res = await mon.iap.purchase(p.id);
+    } finally {
+      purchasing = null;
+    }
+    const fresh = body.querySelector(`.pack[data-id="${p.id}"]`) || (btnEl && btnEl.isConnected ? btnEl : null);
+    const from = fresh ? centerIn(fresh, stage) : null;
+    render();
+    app.showPurchaseResult(res, from);
+    if (res && res.ok) {
+      const again = body.querySelector(`.pack[data-id="${p.id}"]`);
+      if (again) replayClass(again, 'bump', 320);
+    }
   }
 
   async function watchForCoins() {
     const st = shop.rewardedCoinsStatus();
     if (!st.ready) return;
     app.sfx('click');
+    if (rewardedBtn) rewardedBtn.disabled = true;
     const r = await mon.ads.showRewarded('store_coins');
-    if (!r.rewarded) return;
+    if (!r.rewarded) {
+      const msg = rewardedFailText(r, 'get the coins');
+      if (msg) dialogs.toast(msg, { kind: 'warn', ms: 2400 });
+      updateRewarded(true);
+      return;
+    }
     const g = shop.grantRewardedCoins();
     if (g.ok) {
       app.sfx('gift');
@@ -451,11 +503,8 @@ export function createStore(app) {
   }
 
   async function restore() {
-    app.sfx('click');
-    const r = await mon.iap.restore();
-    if (r.ok && r.restored.length) dialogs.toast('Purchases restored: No Ads', { kind: 'ok' });
-    else dialogs.toast(r.ok ? 'Nothing to restore' : 'Restore failed', { kind: r.ok ? 'info' : 'warn' });
-    render();
+    await app.restorePurchases();
+    if (tab === 'coins' && el.classList.contains('active')) render();
   }
 
   let lastRewardedText = '';
@@ -487,15 +536,15 @@ export function createStore(app) {
   }
 
   function enter(opts = {}) {
-    if (!products && mon.enabled) {
-      mon.iap.getProducts().then((list) => {
-        if (Array.isArray(list) && list.length) {
-          products = list;
-          if (tab === 'coins') render();
-        }
-      }).catch(() => {});
-    }
     setTab(opts.tab || tab);
+  }
+
+  /** COINS tab opened: (re)fetch store prices when the last fetch failed or never ran. */
+  function ensureProducts() {
+    if (!mon.iap.enabled) return;
+    const st = mon.iap.productsState();
+    if (st === 'ready' || st === 'loading') return;
+    mon.iap.getProducts().then(() => { if (tab === 'coins' && el.classList.contains('active')) render(); }).catch(() => {});
   }
 
   function leave() {

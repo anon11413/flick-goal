@@ -2,6 +2,7 @@
 // gift and rewarded-coin cooldown. Pure: depends only on a save manager and injectable clock / rng.
 
 import { CONFIG } from '../config.js';
+import { MAX_TX_IDS } from './save.js';
 
 const KINDS = {
   ball: { catalog: 'balls', owned: 'balls', equipped: 'ball' },
@@ -213,6 +214,155 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
     return out;
   }
 
+  // ---- In-app purchase ledger (exactly-once coin grants; see src/platform/revenuecat.js) ----
+  const product = (id) => (cfg.products || []).find((it) => it.id === id) || null;
+  /** Coins a product grants (0 for No Ads / unknown ids). */
+  function productCoins(productId) {
+    const p = product(productId);
+    const n = p && p.grants ? Math.floor(Number(p.grants.coins)) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  const ledger = (d) => {
+    if (!d.iap || typeof d.iap !== 'object') d.iap = { since: 0, done: [], doneT: [], through: 0, orphans: [], synced: false };
+    const l = d.iap;
+    if (!Array.isArray(l.done)) l.done = [];
+    if (!Array.isArray(l.doneT)) l.doneT = [];
+    if (l.doneT.length > l.done.length) l.doneT.length = l.done.length;
+    while (l.doneT.length < l.done.length) l.doneT.push(0);
+    if (!(Number(l.through) >= 0)) l.through = 0;
+    if (!Array.isArray(l.orphans)) l.orphans = [];
+    return l;
+  };
+  const MAX_DONE = MAX_TX_IDS;
+  /**
+   * Record a processed transaction id with its purchase time. When the list is full, the entry with the
+   * OLDEST purchase time is dropped and `through` is raised to that time: every transaction purchased
+   * at or before `through` counts as processed forever (reconcile skips it), so pruning an id can never
+   * make it creditable again.
+   */
+  const pushDone = (l, id, t) => {
+    const tt = Math.floor(Number(t));
+    l.done.push(id);
+    l.doneT.push(Number.isFinite(tt) && tt > 0 ? tt : now()); // unknown purchase time: the time we saw it
+    while (l.done.length > MAX_DONE) {
+      let k = 0;
+      for (let i = 1; i < l.doneT.length; i++) if (l.doneT[i] < l.doneT[k]) k = i;
+      l.through = Math.max(Number(l.through) || 0, l.doneT[k] || 0);
+      l.done.splice(k, 1);
+      l.doneT.splice(k, 1);
+    }
+  };
+  function iapState() { return ledger(save.data); }
+  /** Processed = in the ledger, or purchased at / before the pruning floor (pass the purchase time t). */
+  function hasProcessed(txId, t) {
+    if (typeof txId !== 'string') return false;
+    const l = iapState();
+    if (l.done.includes(txId)) return true;
+    const tt = Number(t);
+    return Number.isFinite(tt) && tt > 0 && l.through > 0 && tt <= l.through;
+  }
+
+  /**
+   * Credit a coin pack for ONE store transaction, exactly once: the "already processed?" check, the
+   * ledger entry and the coins happen in a single save.update, so racing callers (purchase result +
+   * customer-info listener + launch sync) can never double-credit. Returns the coins credited (0 when
+   * the transaction was already processed or the product grants no coins). t = purchase time (ms).
+   */
+  function creditPurchase({ txId, productId, t }) {
+    const amount = productCoins(productId);
+    if (typeof txId !== 'string' || !txId || amount <= 0) return 0;
+    let credited = 0;
+    save.update((d) => {
+      const l = ledger(d);
+      if (l.done.includes(txId)) return;
+      const tt = Number(t);
+      if (Number.isFinite(tt) && tt > 0 && l.through > 0 && tt <= l.through) return;
+      pushDone(l, txId, t);
+      d.coins += amount;
+      credited = amount;
+    });
+    if (credited) emit({ type: 'coins', delta: credited, source: 'iap', productId, txId });
+    return credited;
+  }
+
+  /**
+   * Record transaction ids as processed WITHOUT crediting (ledger baseline, orphan matches).
+   * Accepts ids or { id, t } entries (t = purchase time, ms).
+   */
+  function markProcessed(txIds) {
+    const list = (Array.isArray(txIds) ? txIds : [txIds])
+      .map((x) => (typeof x === 'string' ? { id: x, t: 0 } : x && typeof x === 'object' ? { id: x.id, t: x.t } : null))
+      .filter((x) => x && typeof x.id === 'string' && x.id);
+    if (!list.length) return 0;
+    let n = 0;
+    save.update((d) => {
+      const l = ledger(d);
+      for (const x of list) if (!l.done.includes(x.id)) { pushDone(l, x.id, x.t); n++; }
+    });
+    return n;
+  }
+
+  /** Set the ledger epoch once (store server time of the first purchase-history read). */
+  function setIapEpoch(since) {
+    const t = Math.floor(Number(since));
+    if (!Number.isFinite(t) || t <= 0 || iapState().since > 0) return false;
+    save.update((d) => { ledger(d).since = t; });
+    return true;
+  }
+
+  function setIapSynced() {
+    if (iapState().synced === true) return;
+    save.update((d) => { ledger(d).synced = true; });
+  }
+
+  /**
+   * Fallback credit straight from a purchase result whose store transaction is not visible yet:
+   * credits once per order id and remembers an orphan {p, t, o} so the matching store transaction,
+   * when it shows up, is recorded without a second credit (see resolveOrphan).
+   */
+  function creditOrphan({ productId, t, orderId }) {
+    const amount = productCoins(productId);
+    if (amount <= 0) return 0;
+    const o = typeof orderId === 'string' ? orderId : '';
+    let credited = 0;
+    save.update((d) => {
+      const l = ledger(d);
+      if (o && l.orphans.some((x) => x.o === o)) return;
+      l.orphans.push({ p: productId, t: Math.max(0, Math.floor(Number(t)) || 0), o });
+      if (l.orphans.length > 50) l.orphans.splice(0, l.orphans.length - 50);
+      d.coins += amount;
+      credited = amount;
+    });
+    if (credited) emit({ type: 'coins', delta: credited, source: 'iap', productId, txId: null });
+    return credited;
+  }
+
+  /**
+   * A store transaction that matches an orphan credit (same product, purchase time within windowMs):
+   * mark it processed and drop the orphan, WITHOUT crediting. Returns true when one matched.
+   */
+  function resolveOrphan({ txId, productId, t, windowMs = 10 * 60 * 1000 }) {
+    if (typeof txId !== 'string' || !txId) return false;
+    const l0 = iapState();
+    if (l0.done.includes(txId) || !l0.orphans.length) return false;
+    let hit = false;
+    save.update((d) => {
+      const l = ledger(d);
+      const tt = Number(t) || 0;
+      let i = -1;
+      let best = Infinity;
+      l.orphans.forEach((x, k) => {
+        const dt = Math.abs((x.t || 0) - tt);
+        if (x.p === productId && dt <= windowMs && dt < best) { best = dt; i = k; }
+      });
+      if (i < 0) return;
+      l.orphans.splice(i, 1);
+      pushDone(l, txId, t);
+      hit = true;
+    });
+    return hit;
+  }
+
   /** Tell listeners the whole save changed (e.g. after save.reset()). */
   function refresh() {
     emit({ type: 'reset' });
@@ -227,5 +377,7 @@ export function createShop({ save, cfg = CONFIG, now = () => Date.now(), rng = M
     coins, addCoins, spendCoins, items, isOwned, equipped, buy, equip, upgradeActive, setUpgradeActive,
     giftStatus, claimGift, rewardedCoinsStatus, grantRewardedCoins,
     applyProduct, hasNoAds, setNoAds, refresh, on,
+    productCoins, iapState, hasProcessed, creditPurchase, markProcessed, setIapEpoch, setIapSynced,
+    creditOrphan, resolveOrphan,
   };
 }
