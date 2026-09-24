@@ -28,7 +28,7 @@ element **"In-App Purchases"** (and in some regions "Includes random items" must
 Related App content declarations (same page in Play Console):
 
 - **Ads:** Yes, the app contains ads.
-- **Advertising ID:** Yes, used for **Advertising** and **Analytics** (AdMob). Also required because the manifest
+- **Advertising ID:** Yes, used for **Advertising or marketing**, **Analytics** and **Fraud prevention, security and compliance** (AdMob). Also required because the manifest
   declares `com.google.android.gms.permission.AD_ID`.
 - **Target audience and content:** decision D1 in docs/MONETIZATION_PLAN.md. Default: **13-15, 16-17, 18+**
   (not designed for children). The code ships `tagForChildDirectedTreatment: false` and ads capped at

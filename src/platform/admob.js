@@ -47,9 +47,10 @@ export function forceTestAds(build) {
 }
 
 /**
- * createAdMobAdsProvider({ AdMob, cfg, build, onBusy(delta), hooks: { showLoading(onCancel) -> hide() }, now, log })
+ * createAdMobAdsProvider({ AdMob, cfg, build, onBusy(delta), hooks: { showLoading(onCancel) -> hide() }, now, log, win })
+ * win: optional event target for the 'online' event (consent retry); defaults to the global window.
  */
-export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, hooks = {}, now = () => Date.now(), log = console } = {}) {
+export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, hooks = {}, now = () => Date.now(), log = console, win } = {}) {
   const m = cfg.monetization;
   const ids = (cfg.store && cfg.store.admob) || {};
   const testAds = forceTestAds(build);
@@ -67,6 +68,10 @@ export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, h
   let initialized = false;
   let initializing = null;
   let refreshing = null;
+  let quiet = false;                // a background consent retry is running (buttons keep their state)
+  let consentFails = 0;
+  let consentRetry = 0;
+  let formDeferred = false;         // a background retry found a consent form to show: shown on resume
   let current = null;               // the full-screen ad being shown
   let muted = null;
   const removers = [];
@@ -138,6 +143,27 @@ export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, h
     }
   }
 
+  /**
+   * Consent info failed (offline / UMP error): retry in the background on the preload backoff and as
+   * soon as the device comes back online, so ads return without leaving the app. A background retry
+   * never pops the consent form mid-game: a form it finds is shown on the next resume.
+   */
+  function scheduleConsentRetry() {
+    clearTimeout(consentRetry);
+    if (disposed) return;
+    const wait = backoff[Math.min(Math.max(0, consentFails - 1), backoff.length - 1)];
+    consentRetry = setTimeout(retryConsentNow, wait);
+    if (consentRetry && typeof consentRetry.unref === 'function') consentRetry.unref();
+  }
+  function retryConsentNow() {
+    clearTimeout(consentRetry);
+    if (disposed || consent !== 'error' || refreshing || current) return;
+    quiet = true;
+    refreshConsent({ showForm: false }).finally(() => { quiet = false; notify(); });
+  }
+  const onOnline = () => retryConsentNow();
+  const eventTarget = win !== undefined ? win : (typeof window !== 'undefined' ? window : null);
+
   /** Request consent info (every launch), show the form when required, then initialize + preload. */
   function refreshConsent({ showForm = true } = {}) {
     if (refreshing) return refreshing;
@@ -145,12 +171,17 @@ export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, h
       const r = await call(AdMob, 'requestConsentInfo', consentOptions(), m.consentTimeoutMs);
       if (disposed) return;
       if (!r.ok) {
-        consent = 'error'; // offline / UMP error: no ads this time, retried on resume
+        consent = 'error'; // offline / UMP error: no ads for now, retried in the background / on resume
+        consentFails += 1;
         log.warn('[ads] consent info failed', r.error && r.error.message);
+        scheduleConsentRetry();
         notify();
         return;
       }
+      consentFails = 0;
+      clearTimeout(consentRetry);
       let info = r.value || {};
+      formDeferred = !showForm && info.status === 'REQUIRED' && !!info.isConsentFormAvailable && info.canRequestAds !== true;
       if (showForm && info.status === 'REQUIRED' && info.isConsentFormAvailable) {
         onBusy(1);
         try {
@@ -195,6 +226,7 @@ export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, h
   function init() {
     if (!initPromise) {
       registerListeners();
+      try { if (eventTarget && typeof eventTarget.addEventListener === 'function') eventTarget.addEventListener('online', onOnline); } catch { /* ignore */ }
       initPromise = refreshConsent({ showForm: true })
         .catch((e) => log.warn('[ads] init', e))
         .then(() => { initSettled = true; notify(); return state(); });
@@ -327,7 +359,7 @@ export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, h
 
   function rewardedState() {
     if (disposed) return 'unavailable';
-    if (!initSettled || refreshing || initializing) return isFresh(formats.rewarded) ? 'ready' : 'loading';
+    if (!initSettled || (refreshing && !quiet) || initializing) return isFresh(formats.rewarded) ? 'ready' : 'loading';
     if (!canLoad()) return 'unavailable';
     return isFresh(formats.rewarded) ? 'ready' : 'loading';
   }
@@ -358,7 +390,8 @@ export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, h
       return;
     }
     if (current || disposed || !initSettled) return;
-    if (consent === 'error' || (canRequestAds && !initialized)) {
+    if (consent === 'error' || formDeferred || (canRequestAds && !initialized)) {
+      clearTimeout(consentRetry);
       refreshConsent({ showForm: true });
       return;
     }
@@ -383,6 +416,8 @@ export function createAdMobAdsProvider({ AdMob, cfg, build, onBusy = () => {}, h
 
   function dispose() {
     disposed = true;
+    clearTimeout(consentRetry);
+    try { if (eventTarget && typeof eventTarget.removeEventListener === 'function') eventTarget.removeEventListener('online', onOnline); } catch { /* ignore */ }
     for (const f of Object.values(formats)) clearTimeout(f.retry);
     for (const r of removers.splice(0)) r();
     if (current) current.finish('disposed');

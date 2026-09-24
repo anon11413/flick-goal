@@ -12,7 +12,10 @@
 // reconcile() is the single entry point for the purchase result, the customer-info listener, launch,
 // resume and restore, so duplicate events, an app killed mid-purchase and pending payments that
 // complete later are all credited exactly once. The first purchase-history read of a save is its
-// baseline: everything visible then is history and never credited (a reinstall never refills coins).
+// baseline: everything visible then is history and never credited (a reinstall never refills coins),
+// EXCEPT transactions purchased within cfg.monetization.iapBaselineCreditWindowMs before it: those are
+// most likely paid purchases that were never credited (receipt post failed / app killed, then the app
+// data was wiped); Billing 8 only re-surfaces UNCONSUMED purchases to a fresh install anyway.
 //
 // Every public promise resolves. Tests drive it with a fake Purchases object (tests/fakes/fakeCapacitor.js).
 
@@ -122,18 +125,26 @@ export function createRevenueCatIapProvider({ Purchases, cfg, build, shop, apiKe
     if (!ci || typeof ci !== 'object') return { credited, noAds: shop.hasNoAds(), entitled: false };
     const txs = coinTransactions(ci);
     const ledger = shop.iapState();
+    const credit = (tx) => {
+      const coins = shop.creditPurchase({ txId: tx.id, productId: tx.productId, t: tx.t });
+      if (coins > 0) credited.push({ txId: tx.id, productId: tx.productId, coins });
+    };
     if (!(ledger.since > 0)) {
-      // First purchase-history read for this save: all of it is history (never credited here).
-      shop.markProcessed(txs.map((t) => t.id));
-      shop.setIapEpoch(ms(ci.requestDate) || ms(ci.requestDateMillis) || now());
+      // First purchase-history read for this save: history is never credited, except very recent
+      // transactions (paid but most likely never credited, see the header).
+      const epoch = ms(ci.requestDate) || ms(ci.requestDateMillis) || now();
+      const win = Math.max(0, Number(m.iapBaselineCreditWindowMs) || 0);
+      const recent = (tx) => win > 0 && tx.t > 0 && tx.t >= epoch - win;
+      shop.markProcessed(txs.filter((tx) => !recent(tx)).map((tx) => ({ id: tx.id, t: tx.t })));
+      shop.setIapEpoch(epoch);
+      for (const tx of txs) if (recent(tx) && !shop.hasProcessed(tx.id, tx.t)) credit(tx);
     } else {
       const floor = ledger.since - EPOCH_SLACK_MS;
       for (const tx of txs) {
-        if (shop.hasProcessed(tx.id)) continue;
-        if (tx.t && tx.t < floor) { shop.markProcessed(tx.id); continue; } // older than this save's ledger
+        if (shop.hasProcessed(tx.id, tx.t)) continue; // in the ledger, or at / before its pruning floor
+        if (tx.t && tx.t < floor) continue;            // older than this save's ledger (never credited)
         if (shop.resolveOrphan({ txId: tx.id, productId: tx.productId, t: tx.t })) continue;
-        const coins = shop.creditPurchase({ txId: tx.id, productId: tx.productId });
-        if (coins > 0) credited.push({ txId: tx.id, productId: tx.productId, coins });
+        credit(tx);
       }
     }
     const na = noAdsFrom(ci);
@@ -265,10 +276,23 @@ export function createRevenueCatIapProvider({ Purchases, cfg, build, shop, apiKe
       const r = await call(Purchases, 'purchaseStoreProduct', { product: sp });
       if (!r.ok) {
         if (r.error && r.error.code === RC_ERR.ALREADY_PURCHASED) {
-          // no_ads bought before (another device / reinstall): pull the entitlement in.
+          // Google already owns it but this RevenueCat user doesn't show it (reinstall whose silent sync
+          // failed, another RevenueCat user): the player tapped Buy, so restoring is a user action.
           const rec = await fetchCustomerInfo();
-          if (isNoAds && rec && rec.entitled) return { ok: false, productId, error: 'already_owned', restored: true };
-          return { ok: false, productId, error: isNoAds ? 'already_owned' : 'still_processing' };
+          if (isNoAds) {
+            if (rec && rec.entitled) return { ok: false, productId, error: 'already_owned', restored: true };
+            const rr = await call(Purchases, 'restorePurchases', undefined, 30000);
+            const rec2 = rr.ok ? reconcile(ciOf(rr.value), { fresh: true }) : null;
+            if (rec2 && rec2.entitled) return { ok: false, productId, error: 'already_owned', restored: true };
+            return { ok: false, productId, error: 'owned_elsewhere' };
+          }
+          // An unconsumed coin pack of this product: hand it to RevenueCat (it credits + consumes it).
+          if (inflight.coins <= 0) {
+            const sy = await call(Purchases, 'syncPurchases', undefined, 20000);
+            if (sy.ok) await fetchCustomerInfo();
+          }
+          if (inflight.coins > 0) return { ok: true, productId, coins: inflight.coins };
+          return { ok: false, productId, error: 'still_processing' };
         }
         return failure(productId, r.error);
       }

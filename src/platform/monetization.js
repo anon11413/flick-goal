@@ -242,7 +242,7 @@ export function createMonetization({ cfg = CONFIG, shop, save, root, onBusyChang
   const hooks = { showLoading: root ? (onCancel) => loadingOverlay(root, onCancel) : null };
   let adsP = null;
   if (sel.ads === 'admob') {
-    adsP = createAdMobAdsProvider({ AdMob: nativePlugin(cap, 'AdMob'), cfg, build, onBusy, hooks, now, log });
+    adsP = createAdMobAdsProvider({ AdMob: nativePlugin(cap, 'AdMob'), cfg, build, onBusy, hooks, now, log, win });
   } else if (sel.ads === 'mock' && mock) {
     adsP = mock.ads;
   }
@@ -357,7 +357,7 @@ export function createMonetization({ cfg = CONFIG, shop, save, root, onBusyChang
     /**
      * Buy a product. Resolves { ok, productId, coins?, noAds?, cancelled?, pending?, error? }.
      * Coins / No Ads are already granted when ok (real store: exactly once per transaction).
-     * error: 'busy' | 'unknown_product' | 'already_owned' | 'network' | 'unavailable' | 'store_unavailable'
+     * error: 'busy' | 'unknown_product' | 'already_owned' | 'owned_elsewhere' | 'network' | 'unavailable' | 'store_unavailable'
      *        | 'not_allowed' | 'still_processing' | 'failed' | 'disabled'
      */
     async purchase(productId) {

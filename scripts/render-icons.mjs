@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { ensureRGBA } from './png-rgba.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pwPath = process.env.PLAYWRIGHT_CORE;
@@ -100,8 +101,10 @@ try {
     n += 6;
   }
 
-  // Google Play hi-res icon: 512 x 512, full square (Play applies its own rounded mask), no alpha needed.
+  // Google Play hi-res icon: 512 x 512, full opaque square (Play applies its own rounded mask), saved as
+  // a 32-bit PNG with alpha as Play asks (the screenshot is 24-bit RGB; ensureRGBA adds the alpha channel).
   await shot(page, svg(full(0.9)), 512, path.join(PLAY, 'icon-512.png'), { transparent: false });
+  ensureRGBA(path.join(PLAY, 'icon-512.png'));
 
   // Feature graphic 1024 x 500 (no alpha). Kept free of small text; the key art sits in the middle.
   const fg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 500" width="1024" height="500">

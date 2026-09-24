@@ -84,7 +84,7 @@ export function defaultSave(cfg = CONFIG) {
     // read; 0 = not read yet): history older than that is never credited to this save.
     // orphans = rare credits made from a purchase result before its store transaction was visible.
     // synced = the one-time silent purchase sync (No Ads after a reinstall) has run.
-    iap: { since: 0, done: [], orphans: [], synced: false },
+    iap: { since: 0, done: [], doneT: [], through: 0, orphans: [], synced: false },
     // Ad pacing: cold starts (no interstitial in the first session) and last full-screen ad times.
     adState: { sessions: 0, lastInterstitialAt: 0, lastRewardedAt: 0 },
   };
@@ -142,10 +142,15 @@ function cleanStats(stats) {
 function cleanIap(iap) {
   const s = isObj(iap) ? iap : {};
   const done = [];
+  const doneT = [];
   if (Array.isArray(s.done)) {
-    for (const id of s.done) {
-      if (typeof id === 'string' && id && id.length <= MAX_TX_LEN && !done.includes(id)) done.push(id);
-    }
+    const ts = Array.isArray(s.doneT) ? s.doneT : [];
+    s.done.forEach((id, i) => {
+      if (typeof id === 'string' && id && id.length <= MAX_TX_LEN && !done.includes(id)) {
+        done.push(id);
+        doneT.push(toInt(ts[i], 0)); // store purchase time: not clamped to this device's clock
+      }
+    });
   }
   const orphans = [];
   if (Array.isArray(s.orphans)) {
@@ -155,9 +160,15 @@ function cleanIap(iap) {
       }
     }
   }
+  // Keep the newest MAX_TX_IDS ids; anything dropped here raises the `through` floor (see shop.pushDone).
+  let through = toInt(s.through, 0);
+  const drop = Math.max(0, done.length - MAX_TX_IDS);
+  for (let i = 0; i < drop; i++) through = Math.max(through, doneT[i] || 0);
   return {
     since: toInt(s.since, 0), // store server time: not clamped to this device's clock
-    done: done.slice(-MAX_TX_IDS),
+    done: done.slice(drop),
+    doneT: doneT.slice(drop),
+    through,
     orphans: orphans.slice(-MAX_ORPHANS),
     synced: s.synced === true,
   };

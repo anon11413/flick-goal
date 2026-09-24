@@ -324,7 +324,7 @@ key(profile) = profile==='android-debug' ? (testStoreApiKey || googleApiKey) : g
 2. If `status === 'REQUIRED' && isConsentFormAvailable`, call `AdMob.showConsentForm()`. The busy flag is on while it shows, and the game is still on the menu.
 3. Save `privacyOptionsRequirementStatus`. When it is REQUIRED, Settings shows a **"Privacy & ad choices"** row that calls `AdMob.showPrivacyOptionsForm()` and then re-reads the consent info.
 4. If `canRequestAds`, call `AdMob.initialize({ tagForChildDirectedTreatment, tagForUnderAgeOfConsent, maxAdContentRating, initializeForTesting: testDeviceIds.length>0, testingDevices })` **once**, then preload one rewarded ad and one interstitial.
-5. If consent can't be obtained (form error, offline), ads stay `unavailable` for this session and are retried on the next launch and on `resume`. The game is fully playable without them.
+5. If consent info can't be obtained (UMP error, offline), ads stay `unavailable` (buttons hidden) until a retry succeeds: in the background on the `preloadRetryMs` backoff, at once on the window `online` event, and on `resume`. A background retry never pops the consent form mid-game; a form it finds is shown on the next resume. The game is fully playable without ads.
 
 **Preload:**
 - `prepareRewardVideoAd({ adId, isTesting: forceTest, immersiveMode: true })`. Same for the interstitial.
@@ -363,7 +363,7 @@ It only runs from Play Again or Home after a game over (natural breaks). Never o
 
 **Other:**
 - Mute the game's WebAudio while an ad is showing: busy → `audio.suspend()`.
-- Optional: call `AdMob.setApplicationMuted({muted: !sound})` when the Sound setting changes.
+- Do **not** mirror the game's Sound toggle into `AdMob.setApplicationMuted`: Google does not return video ads that can't play muted to a muted app, so muted players would get fewer (lower-paying) rewarded / interstitial videos. (`mon.setMuted()` still exists for an explicit "Mute ads" setting, but nothing calls it.)
 - Optional: log `...AdImpression` `valueMicros` to the console in debug builds, to see eCPM while testing.
 - Rewarded SSV is **future work**. Coins are local, so a client-side grant on the `Reward` event is acceptable now. SSV needs a server endpoint, and callbacks don't fire for test ads.
 
@@ -417,7 +417,10 @@ Additive save fields (the save stays at `v: 2` and `flickgoal.save2`, and `KNOWN
 ```js
 iap: {
   since: <ms>,      // ledger epoch: set once when the field is first created (fresh install / first run of this build)
-  done: [ids],      // RevenueCat transactionIdentifiers already credited (strings ≤ 64 chars, keep last 500)
+  done: [ids],      // RevenueCat transactionIdentifiers already processed (strings ≤ 128 chars, at most 500)
+  doneT: [ms],      // purchase time of each id in `done` (same order)
+  through: <ms>,    // pruning floor: when `done` is full, the OLDEST-purchased id is dropped and `through` rises to
+                    // its purchase time; every transaction purchased at / before `through` stays processed forever
   orphans: [{ p, t, o }], // rare fallback: credited from a purchase result without a matching RC tx yet (productId, purchaseMs, orderId)
   synced: false,    // first-launch syncPurchases done
 },
@@ -437,7 +440,8 @@ adState: { sessions: 0, lastInterstitialAt: 0, lastRewardedAt: 0 },
 - **Listener and purchase result race:** the same RevenueCat ID appears in both, and `done` is checked inside one synchronous `save.update`.
 - **App killed after Google charged but before JS granted:** RevenueCat's SDK finishes and consumes the purchase on the next start or foreground. CustomerInfo then contains the transaction and `reconcile` credits it on launch.
 - **Pending → completed later:** the listener or the next launch brings the transaction and it is credited once.
-- **Reinstall or cleared data:** the fresh save gets `since = now`. Consumed purchases can't be queried on Google Play anyway. If RevenueCat still links an old history, the epoch stops old transactions from refilling coins. **No Ads comes back** through `syncPurchases()` (entitlement).
+- **Reinstall or cleared data:** the fresh save gets `since = now`. Consumed purchases can't be queried on Google Play anyway. If RevenueCat still links an old history, the epoch stops old transactions from refilling coins, except purchases from the last `monetization.iapBaselineCreditWindowMs` (48 h): those are most likely paid-but-never-credited (receipt post failed, then app data was cleared) and are credited once. **No Ads comes back** through `syncPurchases()` (entitlement).
+- **More than 500 coin purchases:** `through` keeps pruned ids processed, so the ledger never re-pays old transactions.
 - **Multi-tab or sibling builds on the web:** not relevant on native. The ledger lives in the shared save, and unknown keys are preserved by older builds.
 - **Test Store to Google key switch:** Test Store transactions sit under a different RevenueCat app, so they never appear for the Google key.
 
@@ -511,41 +515,31 @@ revenuecat-key.json
 
 ## 7. GitHub Actions build (`.github/workflows/android.yml`)
 
+The owner-facing, step-by-step version is `docs/play/OWNER_GUIDE.md` Step 3 (upload key + secrets) and Step 4 (first build). This section only summarises what the workflow file actually does.
+
 - **Triggers:**
-  - `workflow_dispatch` with inputs `build: debug|release` (default debug) and `ad_mode: test|live` (default test).
-  - `push` of tags `v*`, which builds a release with `ad_mode=live`.
+  - `push` to any branch (code changes only; `**.md`, `docs/**`, `sketches/**` are ignored): debug APK, plus a release AAB with **test** ads when the signing secrets exist.
+  - `push` of a tag `v*`: the release AAB uses **live** ads.
+  - `workflow_dispatch` with inputs `ad_mode: test|live` (default test) and `version_code` (optional override; empty = `1000 + run number`).
   - No `pull_request_target`. Forks never see secrets.
-- **Runner:** `ubuntu-latest`, which has Android SDK platforms 34 to 37 and build-tools 36 (`ANDROID_HOME` is set).
-- **Steps:**
-  1. `actions/checkout@v4`
-  2. `actions/setup-node@v4` (Node 22, npm cache)
-  3. `actions/setup-java@v4` (temurin **21**, gradle cache)
-  4. `npm ci`
-  5. `node scripts/build-web.mjs --profile android-${build} --ads ${ad_mode}`, which writes `www/` and `www/src/build-profile.js`
-  6. `npx cap sync android`
-  7. `node scripts/android-config.mjs --profile … --version-code $((1000 + GITHUB_RUN_NUMBER)) --version-name $(config version)`, which writes `admob.xml` and bumps `versionCode` (it must increase on every Play upload)
-  8. **Guards** (fail the job):
-     - release with `revenuecat.googleApiKey` empty or a Test Store key selected
-     - release with `ad_mode=live` while `store.admob.*` still has the test publisher `3940256099942544`
-     - `appId` mismatch
-  9. Debug: `cd android && ./gradlew assembleDebug`, then upload `app-debug.apk` (retention 14 days).
-  10. Release:
-      - Decode `secrets.ANDROID_KEYSTORE_BASE64` to `$RUNNER_TEMP/upload.p12`.
-      - `./gradlew bundleRelease`. `android/app/build.gradle` gets a `signingConfigs.release` that reads `System.getenv('ANDROID_KEYSTORE_PATH')`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`, and is used only when the path is set.
-      - Upload `app-release.aab` with retention 7 days. Artifacts of a public repo can be downloaded by other signed-in users. An AAB isn't secret, but keep the retention short, and **never** upload the keystore.
-      - `rm` the decoded keystore in an `always()` step.
-- **Secrets** (repo → Settings → Secrets → Actions): `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Nothing else is secret: AdMob IDs and the RevenueCat public key live in `config.js`.
-- **Future (optional):** auto-upload to the Play internal track with a Play service account JSON stored as a secret.
-- **Upload key without a JDK on this PC.** Git Bash ships OpenSSL, and AGP on JDK 21 reads PKCS#12:
-  ```bash
-  openssl req -x509 -newkey rsa:2048 -nodes -keyout upload.key -out upload.crt -days 10000 -subj "/CN=Flick Goal upload"
-  openssl pkcs12 -export -inkey upload.key -in upload.crt -name upload -out upload-keystore.p12   # prompts for a password
-  base64 -w0 upload-keystore.p12 > upload-keystore.b64      # paste into ANDROID_KEYSTORE_BASE64
-  ```
-  - 10,000 days is about 27 years, above the recommended 25 years.
-  - Keep `upload-keystore.p12`, its password and the alias `upload` **outside the repo**, in a password manager plus an offline backup. Then delete `upload.key` and `upload.b64`.
-  - If the key is lost, Play Console → App signing → request an upload key reset.
-  - Alternative: run `keytool -genkeypair` on any machine that has a JDK.
+- **Runner:** `ubuntu-latest`. Every action is on its Node 24 major (`actions/checkout@v7`, `gradle/actions/wrapper-validation@v6`, `actions/setup-node@v7` with Node 22 + npm cache, `actions/setup-java@v6` with Temurin 21 + gradle cache, `android-actions/setup-android@v4` installing `platforms;android-36` and `build-tools;36.0.0`, `actions/cache@v6` for the debug keystore, `actions/upload-artifact@v7`).
+- **Every run:** `npm ci` -> `npm test` -> `node scripts/build-web.mjs --profile android-debug` -> `npx cap sync android` -> `node scripts/android-config.mjs --profile android-debug --version-code $VERSION_CODE` -> `./gradlew assembleDebug` -> artifact `flick-goal-debug-apk` (14 days).
+- **Only when all 4 signing secrets exist** (otherwise a notice says the AAB was skipped):
+  1. `node scripts/build-web.mjs --profile android-release --ads $AD_MODE` and `npx cap sync android`.
+  2. `node scripts/android-config.mjs --profile android-release --ads $AD_MODE --version-code $VERSION_CODE`. It writes `admob.xml` and `android/version.properties` (versionName = `CONFIG.version`; there is no `--version-name` flag) and fails the job when:
+     - `--ads live` while `store.admob` still has Google's test publisher `3940256099942544`, or the ids come from different AdMob accounts / are malformed;
+     - `--ads live` with an empty `store.revenuecat.googleApiKey`, or without an `https://` `store.privacyPolicyUrl`;
+     - a RevenueCat key looks like a SECRET key (`sk_...`);
+     - `capacitor.config.json` / `android/app/build.gradle` applicationId differs from `store.androidAppId`.
+     With `--ads test` an empty RevenueCat key is only a **warning** (coin packs / No Ads are hidden in that build).
+  3. Decode `secrets.ANDROID_KEYSTORE_BASE64` to `$RUNNER_TEMP/upload-keystore.{p12|jks}` (JKS detected by its `FEEDFEED` magic).
+  4. `./gradlew bundleRelease` with `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` from env (`android/app/build.gradle` uses them only when the path is set).
+  5. Upload `app-release.aab` as `flick-goal-release-aab-<ad_mode>-<versionCode>` (7 days). Artifacts of a public repo can be downloaded by other signed-in users: an AAB isn't secret, but the keystore is **never** uploaded.
+  6. `rm` the decoded keystore in an `always()` step.
+- **Secrets** (repo -> Settings -> Secrets and variables -> Actions): `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Nothing else is secret: AdMob IDs and the RevenueCat public key live in `config.js`.
+- **Gradle dependency pins:** `android/variables.gradle` pins `playServicesAdsVersion` and `userMessagingPlatformVersion`, so two release builds of the same commit use the same Google Mobile Ads / UMP SDKs (the AdMob plugin otherwise floats `25.4.+`).
+- **Future (optional):** auto-upload to the Play internal track with a Play service account JSON stored as a secret; move to the GMA Next-Gen SDK once `@capacitor-community/admob` supports it (the current SDK is labelled "Legacy / maintenance mode").
+- **Upload key without a JDK on this PC:** see OWNER_GUIDE Step 3 (OpenSSL in Git Bash makes a PKCS#12 upload key; keep it and its password outside the repo, with an offline backup; if lost, Play Console -> App signing -> request an upload key reset).
 
 ---
 

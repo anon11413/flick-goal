@@ -52,7 +52,9 @@ Why this matters:
 | Buy No Ads | Interstitials stop at once; the menu No Ads button hides; the store shows OWNED. |
 | Reinstall / new phone, same Google account | No Ads comes back automatically on launch (and with Settings -> Restore Purchases). |
 | Restore Purchases | Restores No Ads. Coin packs are used up when bought, so Google Play can't restore them (the message says so). |
-| Refund of No Ads (release builds) | When RevenueCat reports the entitlement inactive, No Ads is removed again. |
+| Refund of No Ads (release builds) | When RevenueCat reports the entitlement inactive, No Ads is removed again. With Google real-time developer notifications connected (OWNER_GUIDE Step 8) RevenueCat learns about it right away; without them only after the player's next purchase sync. |
+| Tap "Buy No Ads" when Google already owns it but this install doesn't know yet | The game restores automatically ("No Ads restored"). If the purchase belongs to another Google account, it says "You already own No Ads. Tap Restore Purchases in Settings." |
+| Paid for coins, but the app crashed / had no connection, then the player cleared app data or reinstalled | Coin purchases from the last 48 h that RevenueCat still reports are credited once on the next launch (older ones count as history, so a reinstall never refills coins). Anything older: refund it in Play Console -> Order management. |
 
 ## Economy reference (for re-pricing)
 

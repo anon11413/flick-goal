@@ -101,6 +101,9 @@ test('Android SDK levels + version wiring', () => {
   assert.match(v, /minSdkVersion = 24/);
   assert.match(v, /compileSdkVersion = 36/);
   assert.match(v, /targetSdkVersion = 36/);  // Google Play: new apps / updates target API 36 from 2026-08-31
+  // reproducible release builds: the Google Mobile Ads / UMP SDK versions are pinned (no '+')
+  assert.match(v, /playServicesAdsVersion = '\d+\.\d+\.\d+'/);
+  assert.match(v, /userMessagingPlatformVersion = '\d+\.\d+\.\d+'/);
   const props = read('android/version.properties');
   assert.match(props, new RegExp(`^versionName=${CONFIG.version.replace(/\./g, '\\.')}$`, 'm'));
   assert.match(props, /^versionCode=\d+$/m);
@@ -168,4 +171,24 @@ test('Play store listing texts fit Google Play limits (name 30, short 80, full 4
   assert.ok(name.length > 0 && name.length <= 30, `name ${name.length}`);
   assert.ok(short.length > 0 && short.length <= 80, `short ${short.length}`);
   assert.ok(full.length > 0 && full.length <= 4000, `full ${full.length}`);
+});
+
+test('Play store icon is a 512 x 512 32-bit PNG (RGBA), as Google Play asks', () => {
+  const b = fs.readFileSync(path.join(ROOT, 'docs/play/graphics/icon-512.png'));
+  assert.equal(b.readUInt32BE(16), 512);
+  assert.equal(b.readUInt32BE(20), 512);
+  assert.equal(b[24], 8, 'bit depth 8');
+  assert.equal(b[25], 6, 'colour type 6 = RGBA');
+  assert.ok(b.length <= 1024 * 1024);
+});
+
+test('workflow actions are on Node 24 majors (Node 20 is removed from runners on 2026-09-23)', () => {
+  const y = read('.github/workflows/android.yml');
+  const min = { 'actions/checkout': 5, 'actions/setup-node': 5, 'actions/setup-java': 5, 'actions/cache': 5, 'actions/upload-artifact': 6, 'gradle/actions/wrapper-validation': 5, 'android-actions/setup-android': 4 };
+  const uses = [...y.matchAll(/uses:\s*([\w./-]+)@v(\d+)/g)];
+  assert.ok(uses.length >= 7);
+  for (const [, name, major] of uses) {
+    assert.ok(name in min, `unexpected action ${name}`);
+    assert.ok(Number(major) >= min[name], `${name}@v${major} is older than its Node 24 major`);
+  }
 });

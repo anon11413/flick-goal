@@ -50,7 +50,7 @@ function newSave(storage = memoryStorage()) {
   return { save, shop, storage };
 }
 
-function admobSetup({ behavior, build = DEBUG, admob, mon } = {}) {
+function admobSetup({ behavior, build = DEBUG, admob, mon, win = null } = {}) {
   const AdMob = Fake.createAdMob({ behavior });
   const cfg = cfgFor({ build, admob, mon });
   const busy = { n: 0, max: 0 };
@@ -60,6 +60,7 @@ function admobSetup({ behavior, build = DEBUG, admob, mon } = {}) {
     onBusy: (d) => { busy.n += d; busy.max = Math.max(busy.max, busy.n); },
     hooks: { showLoading: (cancel) => { loading.shown++; loading.cancel = cancel; return () => { loading.hidden++; }; } },
     log: quiet,
+    win,
   });
   return { AdMob, cfg, p, busy, loading };
 }
@@ -631,10 +632,10 @@ test('save: iap ledger + adState are additive, validated, and survive a progress
     iap: { since: 123, done: ['a', 'a', 7, 'b', 'x'.repeat(300)], orphans: [{ p: 'coins_small', t: 9, o: 'GPA.1' }, { bad: 1 }], synced: 'yes' },
     adState: { sessions: 3, lastInterstitialAt: 9e15, lastRewardedAt: -5 },
   }, CONFIG, 1000);
-  assert.deepEqual(m.iap, { since: 123, done: ['a', 'b'], orphans: [{ p: 'coins_small', t: 9, o: 'GPA.1' }], synced: false });
+  assert.deepEqual(m.iap, { since: 123, done: ['a', 'b'], doneT: [0, 0], through: 0, orphans: [{ p: 'coins_small', t: 9, o: 'GPA.1' }], synced: false });
   assert.deepEqual(m.adState, { sessions: 3, lastInterstitialAt: 1000, lastRewardedAt: 0 });
   const fresh = migrate({ v: 2 });
-  assert.deepEqual(fresh.iap, { since: 0, done: [], orphans: [], synced: false });
+  assert.deepEqual(fresh.iap, { since: 0, done: [], doneT: [], through: 0, orphans: [], synced: false });
 
   const { save, shop } = newSave();
   shop.setIapEpoch(50);
@@ -643,6 +644,140 @@ test('save: iap ledger + adState are additive, validated, and survive a progress
   save.reset();
   assert.equal(save.data.coins, 0, 'reset wipes coins');
   assert.deepEqual(save.data.iap.done, ['rc_1'], 'but keeps the ledger (no re-credit after a reset)');
+  assert.equal(save.data.iap.doneT.length, 1);
   assert.equal(save.data.adState.sessions, 4);
   assert.equal(shop.creditPurchase({ txId: 'rc_1', productId: 'coins_small' }), 0);
+});
+
+// ============================================================================ review fixes
+test('ads: consent info fails at launch -> retried in the background (no resume needed) and on "online"', async () => {
+  const { AdMob, p } = admobSetup({ behavior: { consentFail: true }, mon: { preloadRetryMs: [40] } });
+  await p.init();
+  assert.equal(p.rewardedState(), 'unavailable');
+  await sleep(60); // still offline: a background retry must not flip the buttons to "loading"
+  assert.equal(p.rewardedState(), 'unavailable');
+  assert.ok(names(AdMob).filter((n) => n === 'requestConsentInfo').length >= 2, 'retried on the backoff');
+  AdMob.behavior.consentFail = false;
+  await sleep(80);
+  await untilReady(p);
+  assert.equal(p.rewardedState(), 'ready');
+  assert.ok(!names(AdMob).includes('showConsentForm'), 'a background retry never pops the form mid-game');
+  p.dispose();
+
+  const listeners = {};
+  const win = { addEventListener: (n, fn) => { listeners[n] = fn; }, removeEventListener: (n) => { delete listeners[n]; } };
+  const b = admobSetup({ behavior: { consentFail: true }, mon: { preloadRetryMs: [60000] }, win });
+  await b.p.init();
+  assert.equal(typeof listeners.online, 'function');
+  b.AdMob.behavior.consentFail = false;
+  listeners.online();
+  await untilReady(b.p);
+  assert.equal(b.p.rewardedState(), 'ready');
+  b.p.dispose();
+  assert.equal(listeners.online, undefined, 'listener removed on dispose');
+});
+
+test('ads: background retry that finds a required consent form defers it to the next resume', async () => {
+  const { AdMob, p } = admobSetup({
+    behavior: { consentFail: true, consent: { status: 'REQUIRED', isConsentFormAvailable: true, canRequestAds: false, privacyOptionsRequirementStatus: 'REQUIRED' } },
+    mon: { preloadRetryMs: [30] },
+  });
+  await p.init();
+  AdMob.behavior.consentFail = false;
+  await sleep(80);
+  assert.ok(!names(AdMob).includes('showConsentForm'));
+  p.onResume();
+  await sleep(40);
+  assert.ok(names(AdMob).includes('showConsentForm'), 'form shown on resume');
+  p.dispose();
+});
+
+test('iap: more than 500 coin purchases never re-credit pruned ledger ids (reconcile, relaunch)', async () => {
+  const storage = memoryStorage();
+  let clock = Date.now();
+  const Purchases = Fake.createPurchases({ now: () => (clock += 1000) });
+  const a = rcSetup({ storage, purchases: Purchases });
+  await a.p.init();
+  const N = 505;
+  for (let i = 0; i < N; i++) Purchases.addTransaction('coins_small');
+  const expected = N * a.shop.productCoins('coins_small');
+  a.p.reconcile(Purchases.customerInfo(), { fresh: true });
+  assert.equal(a.shop.coins(), expected);
+  assert.equal(a.shop.iapState().done.length, 500);
+  assert.ok(a.shop.iapState().through > 0, 'pruning raised the floor');
+  a.p.reconcile(Purchases.customerInfo(), { fresh: true });
+  Purchases.fireListeners();
+  await sleep(5);
+  assert.equal(a.shop.coins(), expected, 'second reconcile credits nothing');
+  const b = rcSetup({ storage, purchases: Purchases });
+  await b.p.init();
+  await sleep(5);
+  assert.equal(b.shop.coins(), expected, 'relaunch credits nothing');
+  Purchases.addTransaction('coins_medium');
+  b.p.reconcile(Purchases.customerInfo(), { fresh: true });
+  assert.equal(b.shop.coins(), expected + b.shop.productCoins('coins_medium'), 'a new purchase still pays once');
+});
+
+test('save: pruning an oversized ledger raises the floor', () => {
+  const done = Array.from({ length: 503 }, (_, i) => 'tx' + i);
+  const doneT = done.map((_, i) => 1000 + i);
+  const m = migrate({ v: 2, iap: { since: 5, done, doneT, through: 0 } }, CONFIG, 1e13);
+  assert.equal(m.iap.done.length, 500);
+  assert.equal(m.iap.done[0], 'tx3');
+  assert.equal(m.iap.through, 1002);
+});
+
+test('iap: fresh save credits a paid-but-never-credited purchase from the last 48 h, not older history', async () => {
+  const recent = Date.now() - 60 * 1000;
+  const old = Date.now() - 30 * 86400000;
+  const Purchases = Fake.createPurchases({
+    history: [
+      { transactionIdentifier: 'rc_recent', productIdentifier: 'coins_mega', purchaseDate: new Date(recent).toISOString(), purchaseDateMillis: recent },
+      { transactionIdentifier: 'rc_old', productIdentifier: 'coins_small', purchaseDate: new Date(old).toISOString(), purchaseDateMillis: old },
+    ],
+  });
+  const { p, shop, grants, storage } = rcSetup({ purchases: Purchases });
+  await p.init();
+  await sleep(5);
+  const mega = shop.productCoins('coins_mega');
+  assert.equal(shop.coins(), mega);
+  assert.deepEqual(grants, [{ productId: 'coins_mega', coins: mega, source: 'background' }]);
+  assert.ok(shop.hasProcessed('rc_recent') && shop.hasProcessed('rc_old'));
+  const b = rcSetup({ storage, purchases: Purchases });
+  await b.p.init();
+  await sleep(5);
+  assert.equal(b.shop.coins(), mega, 'still once');
+});
+
+test('iap: buying No Ads that Google already owns but RevenueCat does not show -> automatic restore', async () => {
+  const Purchases = Fake.createPurchases({ behavior: { purchase: 'already' } });
+  const a = rcSetup({ purchases: Purchases });
+  await a.p.init();
+  const realRestore = Purchases.restorePurchases;
+  Purchases.restorePurchases = () => { Purchases.state.noAds = true; return realRestore.call(Purchases); };
+  const r = await a.p.purchase('no_ads');
+  assert.deepEqual({ error: r.error, restored: r.restored }, { error: 'already_owned', restored: true });
+  assert.equal(a.shop.hasNoAds(), true);
+  assert.equal(purchaseErrorText(r), 'No Ads restored ✓');
+  assert.equal(a.busy.n, 0);
+
+  const P2 = Fake.createPurchases({ behavior: { purchase: 'already' } });
+  const b = rcSetup({ purchases: P2 });
+  await b.p.init();
+  const r2 = await b.p.purchase('no_ads'); // owned by another store / RevenueCat user: restore finds nothing
+  assert.equal(r2.error, 'owned_elsewhere');
+  assert.equal(b.shop.hasNoAds(), false);
+  assert.match(purchaseErrorText(r2), /Restore Purchases/);
+});
+
+test('iap: "already purchased" coin pack (unconsumed) is synced and credited once', async () => {
+  const Purchases = Fake.createPurchases({ behavior: { purchase: 'already' } });
+  const { p, shop } = rcSetup({ purchases: Purchases });
+  await p.init();
+  Purchases.syncPurchases = () => { Purchases.addTransaction('coins_small'); return Promise.resolve(); };
+  const r = await p.purchase('coins_small');
+  assert.deepEqual(r, { ok: true, productId: 'coins_small', coins: shop.productCoins('coins_small') });
+  Purchases.fireListeners();
+  await sleep(5);
+  assert.equal(shop.coins(), shop.productCoins('coins_small'));
 });

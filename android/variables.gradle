@@ -14,4 +14,8 @@ ext {
     androidxEspressoCoreVersion = '3.7.0'
     cordovaAndroidVersion = '14.0.1'
     kotlin_version = '2.2.20'
+    // Pinned so two release builds of the same commit use the same Google Mobile Ads / UMP SDKs
+    // (@capacitor-community/admob would otherwise float 'play-services-ads 25.4.+').
+    playServicesAdsVersion = '25.4.0'
+    userMessagingPlatformVersion = '4.0.0'
 }

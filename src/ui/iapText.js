@@ -12,6 +12,7 @@ export function purchaseErrorText(res) {
   switch (res.error) {
     case 'busy': return null;
     case 'already_owned': return res.restored ? 'No Ads restored ✓' : 'No Ads is already active';
+    case 'owned_elsewhere': return 'You already own No Ads. Tap Restore Purchases in Settings.';
     case 'still_processing': return 'Your last purchase is still being processed. Try again in a moment.';
     case 'network': return 'No connection. Try again.';
     case 'store_unavailable': return 'Store unavailable. Check your connection.';

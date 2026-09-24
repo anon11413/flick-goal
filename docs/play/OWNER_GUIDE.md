@@ -63,7 +63,7 @@ Safety rails already built in:
 
 1. **Google Play Console**: https://play.google.com/console, one-time $25, identity verification.
    A **personal** account created after 13 Nov 2023 must run a closed test with **12+ testers for 14 days** before
-   production (step 12). An **organization** account (needs a D-U-N-S number) is exempt.
+   production (Step 10). An **organization** account (needs a D-U-N-S number) is exempt.
 2. Play Console -> **Setup -> Payments profile**: create the merchant account (needed to sell anything).
    Then **enroll in the 15% service-fee tier** (Play Console -> Setup -> Payments / "Service fee": the lower fee
    applies only after you enroll).
@@ -137,7 +137,7 @@ Coin packs stay hidden until the RevenueCat key is set (step 8).
 2. **Policy -> App content** (answers in `content-rating.md` and `data-safety.md`):
    - Privacy policy: URL from step 6
    - **Ads: Yes**
-   - **Advertising ID: Yes** -> Advertising, Analytics
+   - **Advertising ID: Yes** -> Advertising or marketing, Analytics, Fraud prevention, security and compliance
    - App access: all functionality available without login
    - **Target audience**: 13+ (decision D1)
    - **Content rating** questionnaire (IARC): content-rating.md
@@ -177,7 +177,7 @@ Your user site `anon11413/anon11413.github.io` is served at `https://anon11413.g
    **no ads at all**. The game already shows Google's consent form and a "Privacy & ad choices" row in Settings.
 4. Paste the three IDs into `src/config.js` -> `store.admob` (`appId`, `rewarded`, `interstitial`). Commit + push.
    Debug APKs keep showing test ads; only release builds with ad mode **live** use your units.
-5. After the app is live on Play (step 13): AdMob -> Apps -> Flick Goal -> **App settings -> link to the store
+5. After the app is live on Play (Step 11): AdMob -> Apps -> Flick Goal -> **App settings -> link to the store
    listing**. AdMob then reviews the app ("app readiness", usually 2-3 days, limited ads until approved).
 
 **AdMob rules that can get your account banned (read once):**
@@ -204,6 +204,13 @@ Your user site `anon11413/anon11413.github.io` is served at `https://anon11413.g
    - Project settings -> **Restore behavior**: keep the default for anonymous users ("Transfer to new App User ID").
    - **API keys**: copy the **Public app-specific key** for the Google Play app (`goog_...`) into
      `src/config.js` -> `store.revenuecat.googleApiKey`. Commit + push. The store's COINS tab now appears in the app.
+   - **Recommended: Google real-time developer notifications (RTDN)**, so a refunded / voided No Ads is picked up
+     right away instead of the next time the player opens the app. RevenueCat -> Apps & providers -> your Google
+     Play app -> **Google developer notifications -> Connect to Google** (RevenueCat creates a Pub/Sub topic; the
+     service account above must be valid first) and copy the **topic ID** it shows. Then Play Console -> Flick Goal
+     -> **Monetize with Play -> Monetization setup -> Real-time developer notifications**: paste the topic, **Save**,
+     and press **Send test notification** (RevenueCat shows "last received" once it arrives). Guide:
+     https://www.revenuecat.com/docs/platform-resources/server-notifications/google-server-notifications
 3. Optional, to test purchases in a **debug APK before Play is ready**: RevenueCat -> Apps & providers -> **Test
    Store**, add the same 5 products + the `no_ads` entitlement, copy its key (`test_...`) into
    `store.revenuecat.testStoreApiKey`. The debug APK then shows RevenueCat's fake purchase dialog. Release builds

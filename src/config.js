@@ -352,6 +352,10 @@ export const CONFIG = deepFreeze({
     consentTimeoutMs: 10000,
     readyTimeoutMs: 15000,            // mon.ready resolves after this even if consent / the store hang
     resumeSyncMinGapMs: 30000,        // purchases are re-checked on app resume at most this often
+    // A brand-new / wiped save still credits coin purchases made this recently (paid, never credited:
+    // e.g. the receipt upload failed, then app data was cleared). Older ones count as history. If you
+    // ever log players in with a stable RevenueCat app user id (Purchases.logIn), set this to 0.
+    iapBaselineCreditWindowMs: 48 * HOUR,
     // Mock provider (web dev profile)
     mockAdSkipAfterMs: 2000,
     mockRewardedMs: 2000,

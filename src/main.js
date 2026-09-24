@@ -56,9 +56,9 @@ const audio = createAudio({ cfg: CONFIG, enabled: save.data.settings.sound });
 const haptics = createHaptics({ cfg: CONFIG, enabled: save.data.settings.haptics });
 const mon = createMonetization({ cfg: monCfg, shop, save, root: overlay });
 const dialogs = createDialogs({ root: overlay, onClick: () => haptics.pulse('tap') });
-// Full-screen ads / store sheets: silence the game while they are up; ads follow the Sound setting.
+// Full-screen ads / store sheets: silence the game while they are up. The in-game Sound toggle is NOT
+// mirrored into AdMob's app-muted flag: Google serves fewer (and lower-paying) video ads to muted apps.
 mon.onBusyChange((b) => { if (b) audio.suspend(); else if (!document.hidden) audio.resume(); });
-mon.setMuted(!save.data.settings.sound);
 const fx = createFx({ layer: fxLayer, stage });
 
 // QA: ?mode=field|endless sets the saved mode at boot.
@@ -251,7 +251,6 @@ const app = {
   setSound(v) {
     save.update((d) => { d.settings.sound = !!v; });
     audio.setEnabled(!!v);
-    mon.setMuted(!v);
     if (v) { audio.unlock(); sfx('click'); }
   },
   toggleSound() { app.setSound(!save.data.settings.sound); return save.data.settings.sound; },

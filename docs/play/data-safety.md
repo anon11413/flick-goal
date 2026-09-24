@@ -53,5 +53,7 @@ Notes:
 ## Related declaration: Advertising ID
 
 Play Console -> App content -> **Advertising ID**: "Does your app use advertising ID?" **Yes**, purposes
-**Advertising or marketing** and **Analytics**. (The manifest declares `com.google.android.gms.permission.AD_ID`;
+**Advertising or marketing**, **Analytics** and **Fraud prevention, security and compliance** (the same purposes as
+the "Device or other IDs" row above; AdMob uses device identifiers for advertising, analytics and fraud prevention).
+(The manifest declares `com.google.android.gms.permission.AD_ID`;
 play-services-ads adds it anyway.)

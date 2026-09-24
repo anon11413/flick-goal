@@ -59,7 +59,7 @@ Flick Goal contains ads and optional in-app purchases.
 | App category | **Game -> Sports** (alternative: Casual) |
 | Tags | Sports, Casual, Arcade, Football (pick up to 5 that Play offers) |
 | Contact email | **your support address** (required, shown publicly; not filled in here on purpose) |
-| Website | `https://anon11413.github.io/` (needed for app-ads.txt, see OWNER_GUIDE step F) |
+| Website | `https://anon11413.github.io/` (needed for app-ads.txt, see OWNER_GUIDE Step 6) |
 | Privacy policy | the URL where you host docs/play/privacy-policy.html |
 | Contains ads | Yes |
 | In-app purchases | Yes (shown automatically once products exist) |
@@ -68,7 +68,7 @@ Flick Goal contains ads and optional in-app purchases.
 
 | Asset | File | Play requirement |
 |---|---|---|
-| App icon | `graphics/icon-512.png` | 512 x 512 PNG, up to 1 MB |
+| App icon | `graphics/icon-512.png` | 512 x 512, 32-bit PNG (with alpha), up to 1 MB |
 | Feature graphic | `graphics/feature-graphic-1024x500.png` | 1024 x 500 PNG / JPEG, no alpha |
 | Phone screenshots | `screenshots/01-...jpg` to `06-...jpg` (1080 x 1920) | 2-8 screenshots, 16:9 / 9:16, 320-3840 px per side |
 
